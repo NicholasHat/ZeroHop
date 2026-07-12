@@ -27,9 +27,12 @@ xcrun coremlcompiler compile Models/m1_tiny.mlpackage Models/
 
 ## Running
 
-Run plugged in, on a quiet machine. Full protocol is ≥500 warmup + ≥10,000
-measured iterations per cell; results land in `Results/<timestamp>-<cell>/`
-as `meta.json` + `samples.csv` + `summary.json`.
+Run plugged in, on a quiet machine, and **always use the release build for
+measurements** — debug-build harness overhead was measured inflating the
+dispatch segment ~3× (see FINDINGS.md). Full protocol is ≥500 warmup +
+≥10,000 measured iterations per cell; results land in
+`Results/<timestamp>-<cell>/` as `meta.json` + `samples.csv` + `summary.json`.
+Headline findings so far: [`FINDINGS.md`](FINDINGS.md).
 
 ```sh
 # M0 — baseline process-jitter noise floor (6 cells, ~2 min)
@@ -47,6 +50,11 @@ for e3 in sync async naive; do
     .build/release/zerohop m1 --model Models/m1_tiny.mlmodelc --e3 $e3 --e4 $e4 --e5 none
   done
 done
+
+# M2 — transport: E1 read path A|B, E8 multi|seq, E7 pressure/mlock,
+# GPU keep-warm (none | <ms> | saturated)
+.build/release/zerohop m2 --e1 B --e8 multi --gpu-warm saturated
+.build/release/zerohop m2 --e1 A --e8 multi --gpu-warm saturated --pressure on --mlock on
 ```
 
 Optional: run `sudo powermetrics --samplers ane_power,gpu_power -i 1000` in a
