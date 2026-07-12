@@ -3,3 +3,4 @@
 Tools/.venv/
 Models/
 Results/
+__pycache__/
