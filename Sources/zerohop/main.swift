@@ -63,6 +63,14 @@ do {
         try M2Harness.run(resultsRoot: resultsRoot, config: config)
     case "pressure-helper":
         PressureHelper.runLoop(megabytes: Int(flags["mb"] ?? "4096") ?? 4096)
+    case "placement":
+        // Standalone MLComputePlan report for any compiled model (spec §8).
+        guard let path = flags["model"] else {
+            print("usage: zerohop placement --model <path.mlmodelc>")
+            exit(64)
+        }
+        _ = try M1Model.loadWithPlacementAssert(compiledModelURL: URL(fileURLWithPath: path))
+        print("placement assert PASSED")
     default:
         print("unknown command '\(command)'")
         exit(64)

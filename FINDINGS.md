@@ -163,6 +163,81 @@ margin        : one wasted draft slot per rejection ≈ T_draft
 1.4 + 0.15 ≪ 20 − 1.4: **the handoff is not the constraint on this chip; the
 draft model's own latency budget is.** GO for M3.
 
+## M3.1 — speculative decoding, both lanes on GPU (the control experiment)
+
+Llama-3.2-1B-4bit draft → Llama-3.2-3B-4bit target, MLX, k=4, 200 tokens,
+greedy:
+
+- **Correctness: PASS** — speculative output is token-identical to the
+  target-only baseline (greedy equivalence), so acceptance/rollback and both
+  KV-cache trim paths are right.
+- Acceptance 36.7%, 2.47 tokens per verify round.
+- **Speedup 0.58× — same-device speculation *loses*.** Draft propose costs
+  34.6 ms p50 (k=4 sequential 1B calls) and verify 57.8 ms p50, on the same
+  GPU the baseline uses exclusively at 46.2 tok/s. The draft steals the
+  verifier's device. This is the motivating measurement for the heterogeneous
+  architecture: the ANE draft's job is to make T_draft disappear from the
+  GPU's timeline.
+- Also notable: verify(k=4) ≈ 2.7× a single decode step on MLX at 3B — the
+  "verify ≈ one decode" memory-bound assumption (spec §2) does NOT hold at
+  3B/4-bit on MLX; it needs re-measurement at 7–8B before the §2 arithmetic
+  is finalized.
+
+## M3.2 — getting a real 1B stateful Llama onto the ANE (the recipe)
+
+Three successive walls, each isolated with a discriminating experiment:
+
+1. **Dynamic shapes poison everything.** Tensor-valued slice bounds
+   (`k[:, :, :pos+n]`) make the attention graph dynamic and `MLComputePlan`
+   reports the *entire* program `supported=[cpu]` — not per-op fallback,
+   wholesale rejection. Fix: fixed-window attention — always attend over the
+   full 768-slot cache; the full-width additive causal mask excludes
+   unwritten slots. (Bonus: rollback becomes O(1) — move the position
+   pointer back and re-mask; no cache trim at all.)
+2. **MLState is NOT the problem.** A toy stateful model reports
+   `supported=[cpu,ane]` — states are ANE-eligible.
+3. **Size is.** Full 1B at fp16 (2.3 GB): wholesale CPU. Same architecture
+   truncated to 2 layers (~0.7 GB): transformer ops `preferred=ane`. 4-bit
+   kmeans palettization of the full model (591 MB compiled): **all
+   transformer compute `preferred=ane`**, with only the 32 state
+   read/write ops on CPU. This is why ANEMLL ships LUT-quantized chunks.
+
+Also required: coremltools 9.0 `_cast` workaround (rejects 1-element arrays;
+Llama-3.2's RoPE scaling factor `[32.]` hits it), torch ≤2.7,
+transformers ≤4.x (v5 rewrote the Cache API).
+
+**Net: a 1B stateful KV-cache Llama draft runs on the ANE through public
+API.** Heterogeneous benchmark results below.
+
+## M3.2 — first heterogeneous benchmark (ANE draft + GPU target)
+
+Same setup as M3.1 but the draft on the ANE (k=4, 200 tokens, serial loop —
+no overlap yet):
+
+- **Correctness: PASS** — greedy equivalence holds with the ANE draft, so
+  the whole heterogeneous path (CoreML MLState draft, O(1) mask rollback,
+  cross-framework token flow) is sound.
+- **Speed: 6.9 tok/s vs 45.9 baseline (0.15×).** Attribution:
+  1. **Per-call ANE latency: ~34 ms/token** (draft_propose 136.6 ms p50 at
+     k=4). Consistent with public-API ANE 1B decode rates (~30 tok/s class);
+     the GPU/MLX 1B draft does the same call in ~8.6 ms. The E8 lesson says
+     the fix is a multi-token draft head — k drafts in ONE ANE dispatch
+     amortizes this to ~1/k.
+  2. **Acceptance collapsed to 11.2%** (vs 36.7% for the MLX 4-bit draft) —
+     4-bit kmeans palettization degrades the draft's agreement with the
+     target far more than MLX's grouped 4-bit. 6-bit LUT or
+     grouped-quant-aware settings are the lever; draft quality only affects
+     acceptance, never correctness.
+- Pipelining (M3.3) cannot rescue this configuration: T_draft(k=4) ≈ 137 ms
+  > T_verify ≈ 67 ms — the pipeline would be draft-bound. The configuration
+  must first become draft-fast (multi-token head, smaller/better-quantized
+  draft) before overlap pays.
+
+**Standing result:** the architecture is *mechanically* proven end to end on
+public API — first known instance of ANE-draft speculative decoding — and
+the measured gap decomposes into two named, addressable levers (ANE dispatch
+amortization via E8-style multi-token heads; palettization quality).
+
 ## Open items
 
 - E5 warmth curve interpretation (bimodality per period).

@@ -70,10 +70,11 @@ class SliceUpdateCache(Cache):
         begin, end = pos[0], pos[0] + key_states.shape[2]
         self.k[layer_idx, :, :, begin:end, :] = key_states
         self.v[layer_idx, :, :, begin:end, :] = value_states
-        return (
-            self.k[layer_idx, :, :, :end, :],
-            self.v[layer_idx, :, :, :end, :],
-        )
+        # Return the FULL fixed window, not [:end]: a tensor-valued slice end
+        # makes the whole attention graph dynamic and the ANE compiler rejects
+        # every op (observed: all ops supported=[cpu]). The causal mask input
+        # covers the full window, so masked positions contribute nothing.
+        return self.k[layer_idx], self.v[layer_idx]
 
 
 class StatefulDraft(torch.nn.Module):
@@ -137,6 +138,18 @@ def convert(outdir: str, seq_len: int = 1) -> None:
         minimum_deployment_target=ct.target.macOS15,
         compute_units=ct.ComputeUnit.CPU_AND_NE,
     )
+    # The full 1B at fp16 is 2.3 GB and the ANE compiler rejects the whole
+    # program (every op reports supported=[cpu]); a 2-layer truncation goes
+    # preferred=ane. 4-bit palettization brings the weights under the limit —
+    # the same reason ANEMLL ships LUT-quantized models. Draft quality only
+    # affects the acceptance rate, never correctness (the target re-checks
+    # every token).
+    import coremltools.optimize as cto
+    config = cto.coreml.OptimizationConfig(
+        global_config=cto.coreml.OpPalettizerConfig(
+            mode="kmeans", nbits=4, granularity="per_grouped_channel", group_size=16))
+    mlmodel = cto.coreml.palettize_weights(mlmodel, config)
+
     suffix = "" if seq_len == 1 else f"_s{seq_len}"
     path = f"{outdir}/draft_llama32_1b{suffix}.mlpackage"
     mlmodel.save(path)

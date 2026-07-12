@@ -10,6 +10,9 @@ public struct M3Config {
     public var k: Int
     public var tokens: Int
     public var prompt: String
+    /// Path to a compiled stateful CoreML draft (.mlmodelc). When set, the
+    /// draft runs on the ANE (M3.2 heterogeneous mode) instead of MLX.
+    public var coremlDraftPath: String?
 
     public init(targetID: String, draftID: String, k: Int, tokens: Int, prompt: String) {
         self.targetID = targetID
@@ -62,7 +65,17 @@ public enum M3Runner {
 
         // --- speculative run --------------------------------------------------
         let verifier = TargetVerifier(model: targetCtx.model, prompt: promptTokens)
-        let draft = MLXDraft(model: draftCtx.model, prompt: promptTokens)
+        let draft: DraftTokenSource
+        let draftLane: String
+        if let coremlPath = config.coremlDraftPath {
+            print("draft lane: CoreML/ANE (\(coremlPath))")
+            draft = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
+                                    prompt: promptTokens)
+            draftLane = "coreml-ane"
+        } else {
+            draft = MLXDraft(model: draftCtx.model, prompt: promptTokens)
+            draftLane = "mlx-gpu"
+        }
 
         let n = config.tokens
         let draftTimes = SampleRecorder(name: "draft_propose", capacity: n)
@@ -114,11 +127,11 @@ public enum M3Runner {
         print("text: \(targetCtx.tokenizer.decode(tokens: Array(produced.prefix(60))))…")
 
         let sink = try ResultSink(resultsRoot: resultsRoot, milestone: "m3",
-                                  cellName: "mlxdraft_k\(config.k)")
+                                  cellName: "\(draftLane)_k\(config.k)")
         var meta = ResultSink.Meta(
             milestone: "m3",
             cell: ["target": config.targetID, "draft": config.draftID,
-                   "k": String(config.k), "draft_lane": "mlx-gpu"],
+                   "k": String(config.k), "draft_lane": draftLane],
             env: env, warmupIterations: 0, measuredIterations: verifyRounds)
         meta.notes.append("speculative \(String(format: "%.2f", specTokS)) tok/s vs baseline \(String(format: "%.2f", baseTokS)) tok/s (\(String(format: "%.2fx", specTokS / baseTokS)))")
         meta.notes.append("acceptance rate \(String(format: "%.3f", acceptRate)), tokens/round \(String(format: "%.2f", Double(produced.count) / Double(verifyRounds)))")
