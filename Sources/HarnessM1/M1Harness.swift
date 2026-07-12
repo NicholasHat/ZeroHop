@@ -16,6 +16,7 @@ public struct M1Config {
     public var completionStyle: CompletionStyle
     public var policy: ThreadPolicy
     public var warmth: String        // E5: none | 500 | 100 | 50 | 10 | saturated (ms period)
+    public var gpuWarm: String = "none" // GPU-side keep-warm: none | <ms period> | saturated
     public var warmup: Int
     public var iterations: Int
     public var paceNS: UInt64 = 50_000_000  // 20 Hz measured dispatch rate (PLAN §4)
@@ -56,7 +57,7 @@ public enum M1Harness {
 
     public static func run(resultsRoot: URL, config: M1Config) throws {
         let env = EnvInfo.capture()
-        let cellName = "e3-\(config.completionStyle.rawValue)_e4-\(config.policy.rawValue)_e5-\(config.warmth)"
+        let cellName = "e3-\(config.completionStyle.rawValue)_e4-\(config.policy.rawValue)_e5-\(config.warmth)_gw-\(config.gpuWarm)"
         print("M1 round-trip — \(env.chip), macOS \(env.macOSBuild), power: \(env.powerSource)")
         print("cell: \(cellName)  (warmup \(config.warmup), measured \(config.iterations))")
 
@@ -109,6 +110,14 @@ public enum M1Harness {
             }
         }
 
+        // --- GPU keep-warm ----------------------------------------------------
+        var stopGPUWarm: (() -> Void)?
+        if config.gpuWarm != "none" {
+            let periodNS: UInt64? = config.gpuWarm == "saturated" ? nil
+                : UInt64(config.gpuWarm).map { $0 * 1_000_000 }
+            stopGPUWarm = try gpu.startKeepWarm(periodNS: periodNS)
+        }
+
         // --- measured run -----------------------------------------------------
         let watcher = ThermalWatcher()
         watcher.start()
@@ -125,6 +134,7 @@ public enum M1Harness {
         }
 
         correlation.finish(device: gpu.device)
+        stopGPUWarm?()
         heartbeatStop.pointee = true
         heartbeat?.join()
 
@@ -333,6 +343,7 @@ public enum M1Harness {
             cell: ["E3.completion": config.completionStyle.rawValue,
                    "E4.policy": config.policy.rawValue,
                    "E5.warmth": config.warmth,
+                   "gpu_warm": config.gpuWarm,
                    "pace_ns": String(config.paceNS)],
             env: env, warmupIterations: config.warmup, measuredIterations: n)
         meta.thermalTimeline = watcher.stop()

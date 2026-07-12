@@ -39,13 +39,14 @@ do {
     case "m0":
         try M0Baseline.run(resultsRoot: resultsRoot, warmup: warmup, iterations: iters)
     case "m1":
-        let config = M1Config(
+        var config = M1Config(
             modelPath: flags["model"] ?? "Models/m1_tiny.mlmodelc",
             completionStyle: M1Config.CompletionStyle(rawValue: flags["e3"] ?? "sync") ?? .sync,
             policy: ThreadPolicy(rawValue: flags["e4"] ?? "rt") ?? .timeConstraint,
             warmth: flags["e5"] ?? "none",
             warmup: warmup, iterations: iters
         )
+        config.gpuWarm = flags["gpu-warm"] ?? "none"
         try M1Harness.run(resultsRoot: resultsRoot, config: config)
     default:
         print("unknown command '\(command)'")

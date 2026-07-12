@@ -111,6 +111,45 @@ public final class GPULane {
         return Slot(commandBuffer: cb, sampleBuffer: sampleBuffer, value: value)
     }
 
+    /// GPU keep-warm (hypothesis from the M1 sweep: t5→t6 release latency of
+    /// ~650 µs p50 is the GPU waking from idle, since one tiny kernel every
+    /// 50 ms lets it power-gate — the GPU-side analog of E5). A background
+    /// thread trickles trivial dispatches on a SEPARATE queue so the measured
+    /// queue's pre-committed buffers are untouched.
+    /// periodNS nil = saturated (back-to-back).
+    public func startKeepWarm(periodNS: UInt64?) throws -> () -> Void {
+        guard let warmQueue = device.makeCommandQueue() else {
+            throw HarnessError("no keep-warm command queue")
+        }
+        let stopFlag = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
+        stopFlag.initialize(to: false)
+        let pipeline = self.pipeline
+        let src = self.srcBuffer
+        let sink = self.sinkBuffer
+        let thread = DedicatedThread(policy: .default) {
+            while !stopFlag.pointee {
+                guard let cb = warmQueue.makeCommandBuffer(),
+                      let enc = cb.makeComputeCommandEncoder() else { break }
+                enc.setComputePipelineState(pipeline)
+                enc.setBuffer(src, offset: 0, index: 0)
+                enc.setBuffer(sink, offset: 0, index: 1)
+                enc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+                enc.endEncoding()
+                cb.commit()
+                cb.waitUntilCompleted()
+                if let periodNS {
+                    mach_wait_until(MachClock.now() + MachClock.fromNanos(periodNS))
+                }
+            }
+        }
+        return {
+            stopFlag.pointee = true
+            thread.join()
+            stopFlag.deallocate()
+        }
+    }
+
     /// Block until the command buffer for `value` completes, harvest its GPU
     /// timestamps, and refill the ring (both off the measured segment, which
     /// ends at kernel start).
