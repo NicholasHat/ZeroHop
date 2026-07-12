@@ -6,11 +6,19 @@ import HarnessCore
 /// each parked on `encodeWait(sharedEvent, value: n)`. The handoff thread's
 /// only GPU-facing action is writing `signaledValue = n`; the released command
 /// buffer's kernel-start timestamp is t6.
+///
+/// M1 uses the built-in no-op kernel; M2 supplies its own kernel source plus a
+/// per-slot `encodeBody` that binds the real reader/canary resources. The
+/// encode body runs at slot-(re)build time — never on the measured segment.
 public final class GPULane {
+    public typealias EncodeBody = (_ encoder: MTLComputeCommandEncoder, _ value: UInt64, _ slotIndex: Int) -> Void
+
     public let device: MTLDevice
     public let queue: MTLCommandQueue
     public let event: MTLSharedEvent
     private let pipeline: MTLComputePipelineState
+    private let warmPipeline: MTLComputePipelineState
+    private let encodeBody: EncodeBody?
     private let srcBuffer: MTLBuffer
     private let sinkBuffer: MTLBuffer
     private let counterSet: MTLCounterSet?
@@ -29,12 +37,12 @@ public final class GPULane {
     private var ring: [Slot] = []
     private let ringDepth: Int
 
-    static let kernelSource = """
+    public static let noopKernelSource = """
     #include <metal_stdlib>
     using namespace metal;
     // No-op verify stand-in: reads a word so the event wait cannot be elided,
-    // writes a sink so the dispatch is observable. Replaced by the real
-    // reader/canary kernel at M2.
+    // writes a sink so the dispatch is observable. Also used as the keep-warm
+    // kernel. M2 supplies the real reader/canary kernel.
     kernel void verify_noop(device const uint* src [[buffer(0)]],
                             device atomic_uint* sink [[buffer(1)]],
                             uint tid [[thread_position_in_grid]]) {
@@ -44,7 +52,8 @@ public final class GPULane {
     }
     """
 
-    public init(ringDepth: Int = 8) throws {
+    public init(ringDepth: Int = 8, kernelSource: String? = nil,
+                kernelName: String = "verify_noop", encodeBody: EncodeBody? = nil) throws {
         guard let dev = MTLCreateSystemDefaultDevice() else {
             throw HarnessError("no Metal device")
         }
@@ -53,10 +62,16 @@ public final class GPULane {
         queue = q
         guard let ev = dev.makeSharedEvent() else { throw HarnessError("no shared event") }
         event = ev
+        self.encodeBody = encodeBody
 
         // Compiled at startup from source — off the critical path, no build step.
-        let library = try dev.makeLibrary(source: Self.kernelSource, options: nil)
-        pipeline = try dev.makeComputePipelineState(function: library.makeFunction(name: "verify_noop")!)
+        let library = try dev.makeLibrary(source: kernelSource ?? Self.noopKernelSource, options: nil)
+        guard let fn = library.makeFunction(name: kernelName) else {
+            throw HarnessError("kernel '\(kernelName)' not found in supplied source")
+        }
+        pipeline = try dev.makeComputePipelineState(function: fn)
+        let warmLibrary = try dev.makeLibrary(source: Self.noopKernelSource, options: nil)
+        warmPipeline = try dev.makeComputePipelineState(function: warmLibrary.makeFunction(name: "verify_noop")!)
         srcBuffer = dev.makeBuffer(length: 16, options: .storageModeShared)!
         sinkBuffer = dev.makeBuffer(length: 16, options: .storageModeShared)!
 
@@ -72,6 +87,10 @@ public final class GPULane {
     }
 
     public var hasCounterSampling: Bool { counterSet != nil }
+
+    /// Stable slot index for a wait value (slots are rebuilt in place with
+    /// value + ringDepth, so the mapping never changes).
+    public func slotIndex(for value: UInt64) -> Int { Int((value - 1) % UInt64(ringDepth)) }
 
     /// Pre-commit command buffers waiting on values startValue..<startValue+depth.
     public func primeRing(startValue: UInt64) throws {
@@ -102,10 +121,14 @@ public final class GPULane {
             throw HarnessError("compute encoder")
         }
         enc.setComputePipelineState(pipeline)
-        enc.setBuffer(srcBuffer, offset: 0, index: 0)
-        enc.setBuffer(sinkBuffer, offset: 0, index: 1)
-        enc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
-                            threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        if let encodeBody {
+            encodeBody(enc, value, Int((value - 1) % UInt64(ringDepth)))
+        } else {
+            enc.setBuffer(srcBuffer, offset: 0, index: 0)
+            enc.setBuffer(sinkBuffer, offset: 0, index: 1)
+            enc.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        }
         enc.endEncoding()
         cb.commit()
         return Slot(commandBuffer: cb, sampleBuffer: sampleBuffer, value: value)
@@ -123,7 +146,7 @@ public final class GPULane {
         }
         let stopFlag = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
         stopFlag.initialize(to: false)
-        let pipeline = self.pipeline
+        let pipeline = self.warmPipeline
         let src = self.srcBuffer
         let sink = self.sinkBuffer
         let thread = DedicatedThread(policy: .default) {

@@ -2,6 +2,7 @@ import Foundation
 import HarnessCore
 import HarnessM0
 import HarnessM1
+import HarnessM2
 
 // Hand-rolled CLI (no third-party dependencies, spec §11):
 //   zerohop m0 [--warmup N] [--iters N]
@@ -48,6 +49,20 @@ do {
         )
         config.gpuWarm = flags["gpu-warm"] ?? "none"
         try M1Harness.run(resultsRoot: resultsRoot, config: config)
+    case "m2":
+        let config = M2Config(
+            modelPathK8: flags["model-k8"] ?? "Models/m2_logits_k8.mlmodelc",
+            modelPathK1: flags["model-k1"] ?? "Models/m2_logits_k1.mlmodelc",
+            readPath: M2Config.ReadPath(rawValue: flags["e1"] ?? "A") ?? .A,
+            granularity: M2Config.Granularity(rawValue: flags["e8"] ?? "multi") ?? .multi,
+            mlockAttempt: flags["mlock"] == "on",
+            pressure: flags["pressure"] == "on",
+            gpuWarm: flags["gpu-warm"] ?? "none",
+            warmup: warmup, iterations: iters
+        )
+        try M2Harness.run(resultsRoot: resultsRoot, config: config)
+    case "pressure-helper":
+        PressureHelper.runLoop(megabytes: Int(flags["mb"] ?? "4096") ?? 4096)
     default:
         print("unknown command '\(command)'")
         exit(64)

@@ -8,9 +8,10 @@ let package = Package(
         .target(name: "HarnessCore"),
         .target(name: "HarnessM0", dependencies: ["HarnessCore"]),
         .target(name: "HarnessM1", dependencies: ["HarnessCore"]),
+        .target(name: "HarnessM2", dependencies: ["HarnessCore", "HarnessM1"]),
         .executableTarget(
             name: "zerohop",
-            dependencies: ["HarnessCore", "HarnessM0", "HarnessM1"]
+            dependencies: ["HarnessCore", "HarnessM0", "HarnessM1", "HarnessM2"]
         ),
     ]
 )
