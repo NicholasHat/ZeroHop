@@ -57,6 +57,25 @@ done
 .build/release/zerohop m2 --e1 A --e8 multi --gpu-warm saturated --pressure on --mlock on
 ```
 
+## M3 — speculative decoding (separate binary)
+
+`zerohop-m3` links mlx-swift for the target lane and therefore **must be
+built with xcodebuild** (command-line SwiftPM cannot compile MLX's Metal
+shaders; the binary dies with "Failed to load the default metallib"):
+
+```sh
+xcodebuild build -scheme zerohop-m3 -configuration Release \
+  -destination 'platform=macOS' -derivedDataPath .build/xcode
+
+.build/xcode/Build/Products/Release/zerohop-m3 --k 4 --n 200 \
+  --target mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --draft  mlx-community/Llama-3.2-1B-Instruct-4bit
+```
+
+Models download to `~/.cache/huggingface` on first run. The M0–M2
+measurement binary (`zerohop`) intentionally has zero third-party
+dependencies and still builds with plain `swift build`.
+
 Optional: run `sudo powermetrics --samplers ane_power,gpu_power -i 1000` in a
 second terminal during measured runs and note the window in the run's
 `meta.json`; the harness itself records thermal state and power source.
