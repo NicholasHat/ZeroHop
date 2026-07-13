@@ -28,6 +28,7 @@ var config = M3Config(
     prompt: flags["prompt"] ?? "The key ideas behind speculative decoding are"
 )
 config.coremlDraftPath = flags["coreml-draft"]
+config.overlap = flags["overlap"] == "on"
 let resultsRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     .appendingPathComponent("Results")
 

@@ -1,5 +1,6 @@
 import Foundation
 import HarnessCore
+import HarnessM1
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -13,6 +14,8 @@ public struct M3Config {
     /// Path to a compiled stateful CoreML draft (.mlmodelc). When set, the
     /// draft runs on the ANE (M3.2 heterogeneous mode) instead of MLX.
     public var coremlDraftPath: String?
+    /// M3.3: overlap the draft of batch N+1 with the verify of batch N.
+    public var overlap = false
 
     public init(targetID: String, draftID: String, k: Int, tokens: Int, prompt: String) {
         self.targetID = targetID
@@ -78,32 +81,54 @@ public enum M3Runner {
         }
 
         let n = config.tokens
-        let draftTimes = SampleRecorder(name: "draft_propose", capacity: n)
+        let draftTimes = SampleRecorder(
+            name: config.overlap ? "overlap_span" : "draft_propose", capacity: n)
         let verifyTimes = SampleRecorder(name: "target_verify", capacity: n)
+        let roundTimes = SampleRecorder(name: "round", capacity: n)
 
         var produced: [Int] = []
         var acceptedDraftTotal = 0
         var verifyRounds = 0
-        var ingest: [Int] = []
+        var pipelineHits = 0
         let specStart = MachClock.now()
-        while produced.count < n {
-            let t0 = MachClock.now()
-            let drafts = try draft.propose(k: config.k, ingest: ingest)
-            let t1 = MachClock.now()
-            let outcome = verifier.verify(drafts: drafts)
-            let t2 = MachClock.now()
-            draftTimes.record(MachClock.toNanos(t1 - t0))
-            verifyTimes.record(MachClock.toNanos(t2 - t1))
 
-            // Reconcile the draft with what was actually accepted.
-            if !outcome.allAccepted {
-                // Draft cache holds d_1..d_{k-1}; keep the j accepted ones.
-                try draft.rollback((config.k - 1) - outcome.acceptedDrafts)
+        if config.overlap {
+            // M3.3: draft batch N+1 on its own RT thread while the GPU
+            // verifies batch N (PipelinedDecoder).
+            guard config.coremlDraftPath != nil else {
+                throw HarnessError("--overlap on requires --coreml-draft: overlapping an MLX "
+                    + "draft with an MLX verify runs concurrent evals on one device "
+                    + "(unsupported), and same-device overlap has nothing to gain anyway")
             }
-            ingest = [outcome.accepted.last!] // correction or bonus token
-            produced.append(contentsOf: outcome.accepted)
-            acceptedDraftTotal += outcome.acceptedDrafts
-            verifyRounds += 1
+            let stats = try PipelinedDecoder.decode(
+                draft: draft, verifier: verifier, k: config.k, tokens: n,
+                draftTimes: draftTimes, verifyTimes: verifyTimes, roundTimes: roundTimes)
+            produced = stats.produced
+            acceptedDraftTotal = stats.acceptedDrafts
+            verifyRounds = stats.rounds
+            pipelineHits = stats.pipelineHits
+        } else {
+            var ingest: [Int] = []
+            while produced.count < n {
+                let t0 = MachClock.now()
+                let drafts = try draft.propose(k: config.k, ingest: ingest)
+                let t1 = MachClock.now()
+                let outcome = verifier.verify(drafts: drafts)
+                let t2 = MachClock.now()
+                draftTimes.record(MachClock.toNanos(t1 - t0))
+                verifyTimes.record(MachClock.toNanos(t2 - t1))
+                roundTimes.record(MachClock.toNanos(t2 - t0))
+
+                // Reconcile the draft with what was actually accepted.
+                if !outcome.allAccepted {
+                    // Draft cache holds d_1..d_{k-1}; keep the j accepted ones.
+                    try draft.rollback((config.k - 1) - outcome.acceptedDrafts)
+                }
+                ingest = [outcome.accepted.last!] // correction or bonus token
+                produced.append(contentsOf: outcome.accepted)
+                acceptedDraftTotal += outcome.acceptedDrafts
+                verifyRounds += 1
+            }
         }
         let specNS = MachClock.toNanos(MachClock.now() - specStart)
         let specTokS = Double(produced.count) * 1e9 / Double(specNS)
@@ -121,24 +146,31 @@ public enum M3Runner {
         print("baseline:    \(baseline.count) tokens in \(SampleRecorder.fmt(baseNS)) → \(String(format: "%.2f", baseTokS)) tok/s")
         print("acceptance:  \(String(format: "%.1f%%", acceptRate * 100)) of drafts (k=\(config.k)), \(String(format: "%.2f", Double(produced.count) / Double(verifyRounds))) tokens/verify-round")
         print("speedup:     \(String(format: "%.2fx", specTokS / baseTokS))")
-        printSummaryTable([draftTimes.summarize(), verifyTimes.summarize()])
+        if config.overlap {
+            print("pipeline:    \(pipelineHits)/\(verifyRounds) speculative batches landed (\(String(format: "%.1f%%", 100.0 * Double(pipelineHits) / Double(max(verifyRounds, 1)))))")
+        }
+        printSummaryTable([draftTimes.summarize(), verifyTimes.summarize(), roundTimes.summarize()])
         let sameOutput = produced == baseline
         print("greedy-equivalence check (spec output == baseline output): \(sameOutput ? "PASS" : "FAIL")")
         print("text: \(targetCtx.tokenizer.decode(tokens: Array(produced.prefix(60))))…")
 
         let sink = try ResultSink(resultsRoot: resultsRoot, milestone: "m3",
-                                  cellName: "\(draftLane)_k\(config.k)")
+                                  cellName: "\(draftLane)_k\(config.k)\(config.overlap ? "_overlap" : "")")
         var meta = ResultSink.Meta(
             milestone: "m3",
             cell: ["target": config.targetID, "draft": config.draftID,
-                   "k": String(config.k), "draft_lane": draftLane],
+                   "k": String(config.k), "draft_lane": draftLane,
+                   "overlap": config.overlap ? "on" : "off"],
             env: env, warmupIterations: 0, measuredIterations: verifyRounds)
         meta.notes.append("speculative \(String(format: "%.2f", specTokS)) tok/s vs baseline \(String(format: "%.2f", baseTokS)) tok/s (\(String(format: "%.2fx", specTokS / baseTokS)))")
         meta.notes.append("acceptance rate \(String(format: "%.3f", acceptRate)), tokens/round \(String(format: "%.2f", Double(produced.count) / Double(verifyRounds)))")
         meta.notes.append("greedy equivalence: \(sameOutput ? "PASS" : "FAIL")")
+        if config.overlap {
+            meta.notes.append("pipeline hits \(pipelineHits)/\(verifyRounds)")
+        }
         try sink.writeMeta(meta)
-        try sink.writeSamplesCSV(iterationsOf: [draftTimes, verifyTimes])
-        try sink.writeSummaries([draftTimes.summarize(), verifyTimes.summarize()])
+        try sink.writeSamplesCSV(iterationsOf: [draftTimes, verifyTimes, roundTimes])
+        try sink.writeSummaries([draftTimes.summarize(), verifyTimes.summarize(), roundTimes.summarize()])
         print("-> \(sink.dir.path)")
     }
 

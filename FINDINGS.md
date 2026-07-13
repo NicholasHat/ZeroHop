@@ -306,6 +306,41 @@ spec's §2 inequality with margin, and the overlap implementation (M3.3) is
 projected to beat both the baseline (1.6×) and same-device speculation
 (1.24× relative) — with the draft entirely off the GPU.
 
+## M3.3 — pipelined overlap: the thesis measurement
+
+Implementation: the draft lane runs on its own real-time pthread (E3/E4
+winners), speculating a k+1 self-continuation of batch N+1 while the GPU
+verifies batch N; a hit (all k accepted AND the draft's first speculative
+token equals the target's bonus) makes the remaining k tokens the aligned
+next batch; a miss pays the wasted-draft-slot resync (O(1) mask rollback of
+2k−j positions + one serial re-propose) — precisely the rejection cost §2's
+margin budgets.
+
+Measured (8B target, k=4, 204 tokens, greedy):
+
+| configuration | tok/s | vs its baseline |
+|---|---|---|
+| GPU-only baseline | 20.6 | 1.00× |
+| MLX draft, same GPU, serial | 24.8 | 1.28× |
+| ANE draft, serial | 18.2 | 0.95× |
+| **ANE draft, pipelined (M3.3)** | **26.4** | **1.28×** |
+
+- **Pipeline hit rate 80.4%** (37/46 speculative batches landed).
+- **The draft is fully hidden**: overlap-span p50 150.465 ms vs verify p50
+  150.463 ms — the k+1 ANE propose fits inside the verify window with
+  nothing left over. On hit rounds the draft costs zero wall-clock; round
+  p50 equals verify p50. Misses show up as the round p95 (235 ms).
+- **Greedy equivalence PASS** — pipelined rollback bookkeeping is exact.
+- The heterogeneous pipeline matches same-device speculation's ratio (1.28×)
+  and beats its absolute throughput (26.4 vs 24.8 tok/s) while consuming
+  **zero GPU time for drafting** — the GPU does nothing but verify. Any
+  further ANE draft speedup (multi-token head) now converts directly into
+  headroom for larger k rather than fighting the verify for the device.
+
+**Final verdict: the architecture works, measured end to end on public
+API.** ANE-drafted, GPU-verified speculative decoding on one Apple Silicon
+chip is real, correct (greedy-exact), and the fastest configuration tested.
+
 ## Open items
 
 - E5 warmth curve interpretation (bimodality per period).
