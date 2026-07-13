@@ -123,7 +123,10 @@ class StatefulDraft(torch.nn.Module):
             past_key_values=past,
             use_cache=True,
         )
-        return out.logits
+        # Greedy drafting only ever consumes the argmax token id: fuse the
+        # reduction into the model so each call returns 4 bytes instead of a
+        # 256 KB logits tensor, and the reduction runs on-device.
+        return out.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(torch.int32)
 
 
 def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans") -> None:
@@ -149,7 +152,7 @@ def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans")
             ct.TensorType(name="causalMask", shape=(1, 1, seq_len, CONTEXT), dtype=np.float16),
             ct.TensorType(name="firstPosition", shape=(1,), dtype=np.int32),
         ],
-        outputs=[ct.TensorType(name="logits", dtype=np.float16)],
+        outputs=[ct.TensorType(name="token", dtype=np.int32)],
         states=[
             ct.StateType(wrapped_type=ct.TensorType(shape=cache_shape, dtype=np.float16),
                          name="keyCache"),

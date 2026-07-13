@@ -341,6 +341,34 @@ Measured (8B target, k=4, 204 tokens, greedy):
 API.** ANE-drafted, GPU-verified speculative decoding on one Apple Silicon
 chip is real, correct (greedy-exact), and the fastest configuration tested.
 
+## Optimization round — draft cost → speculation window
+
+Two changes to the draft export: 4-bit kmeans palettization (591 MB — the
+acceptance collapse previously blamed on 4-bit was the cache bug; post-fix
+its torch A/B matches for 3 tokens then diverges coherently) and a **fused
+greedy head** (the model returns the argmax token id — 4 bytes/call instead
+of a 256 KB logits tensor, reduction on-device). Then a k-sweep, all
+pipelined, 8B target (ratios are the robust metric; these ran on battery):
+
+| draft, k | tok/s | speedup | tokens/round | hit rate | verify p50 |
+|---|---|---|---|---|---|
+| 6-bit, k=4 | 26.4 | 1.28× | 4.43 | 80.4% | 150 ms |
+| 4-bit fused, k=4 | 25.4 | 1.33× | 4.34 | 78.7% | 147 ms |
+| 6-bit, k=6 | 26.6 | 1.39× | 5.83 | 74.3% | 186 ms |
+| **4-bit fused, k=6** | **28.1** | **1.47×** | 5.69 | 72.2% | 176 ms |
+| 4-bit fused, k=8 | 26.3 | 1.38× | 6.87 | 66.7% | 216 ms |
+
+- In every cell the overlap span equals verify p50 to the microsecond — the
+  draft (up to 9 sequential ANE calls at k=8) stays fully hidden. The
+  faster draft's value is exactly what §2's arithmetic says: a wider viable
+  speculation window, not lower round latency.
+- **The knee is k=6 at 1.47×**: past it, per-token acceptance decay (78% →
+  73%) and verify growth (176 → 216 ms) outpace the extra tokens/round.
+- Greedy equivalence PASS in all cells.
+- A trained multi-token (Medusa-class) head is the one lever left untouched
+  — it needs training, out of PoC scope; everything reachable with public
+  models and public API is now measured.
+
 ## Open items
 
 - E5 warmth curve interpretation (bimodality per period).

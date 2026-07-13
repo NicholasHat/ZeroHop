@@ -16,12 +16,13 @@ public final class CoreMLDraft: DraftTokenSource {
     private let state: MLState
     private let options: MLPredictionOptions
     private let features: MLDictionaryFeatureProvider
-    private let logitsBacking: AlignedBacking
+    private let logitsBacking: AlignedBacking?
+    private let tokenMode: Bool
 
     private let idsPtr: UnsafeMutablePointer<Int32>
     private let posPtr: UnsafeMutablePointer<Int32>
     private let maskPtr: UnsafeMutablePointer<Float16>
-    private let logitsPtr: UnsafePointer<Float16>
+    private let logitsPtr: UnsafePointer<Float16>?
     private let vocab: Int
     private let context: Int
 
@@ -33,14 +34,23 @@ public final class CoreMLDraft: DraftTokenSource {
         model = try M1Model.loadWithPlacementAssert(compiledModelURL: compiledModelURL)
         state = model.makeState()
 
-        guard let outDesc = model.modelDescription.outputDescriptionsByName["logits"],
-              let outShape = outDesc.multiArrayConstraint?.shape.map(\.intValue),
-              let maskDesc = model.modelDescription.inputDescriptionsByName["causalMask"],
+        guard let maskDesc = model.modelDescription.inputDescriptionsByName["causalMask"],
               let maskShape = maskDesc.multiArrayConstraint?.shape.map(\.intValue) else {
-            throw HarnessError("draft model missing logits/causalMask descriptions")
+            throw HarnessError("draft model missing causalMask description")
         }
-        vocab = outShape.last!
         context = maskShape.last!
+        // Two model interfaces: newer exports fuse the greedy reduction and
+        // return "token" [1,1] i32 (4 bytes/call); older ones return "logits"
+        // [1,1,V] fp16 and we argmax on the CPU.
+        let outputs = model.modelDescription.outputDescriptionsByName
+        tokenMode = outputs["token"] != nil
+        if tokenMode {
+            vocab = 0
+        } else if let outShape = outputs["logits"]?.multiArrayConstraint?.shape.map(\.intValue) {
+            vocab = outShape.last!
+        } else {
+            throw HarnessError("draft model has neither 'token' nor 'logits' output")
+        }
 
         let ids = try MLMultiArray(shape: [1, 1], dataType: .int32)
         let first = try MLMultiArray(shape: [1], dataType: .int32)
@@ -56,10 +66,16 @@ public final class CoreMLDraft: DraftTokenSource {
         }
         for i in 0..<context { maskPtr[i] = Self.masked }
 
-        logitsBacking = try AlignedBacking(shape: outShape)
-        logitsPtr = UnsafeRawPointer(logitsBacking.pointer).assumingMemoryBound(to: Float16.self)
         options = MLPredictionOptions()
-        options.outputBackings = ["logits": logitsBacking.array]
+        if tokenMode {
+            logitsBacking = nil
+            logitsPtr = nil
+        } else {
+            let backing = try AlignedBacking(shape: [1, 1, vocab])
+            logitsBacking = backing
+            logitsPtr = UnsafeRawPointer(backing.pointer).assumingMemoryBound(to: Float16.self)
+            options.outputBackings = ["logits": backing.array]
+        }
         features = try MLDictionaryFeatureProvider(dictionary: [
             "inputIds": MLFeatureValue(multiArray: ids),
             "causalMask": MLFeatureValue(multiArray: mask),
@@ -73,20 +89,30 @@ public final class CoreMLDraft: DraftTokenSource {
         pendingIngest = [prompt.last!]
     }
 
-    /// Feed one token at the current position; logits land in the backing.
-    private func feed(_ token: Int) throws {
+    /// Feed one token at the current position; returns the model's greedy
+    /// next token (from the fused head, or CPU argmax over the logits).
+    @discardableResult
+    private func feed(_ token: Int) throws -> Int {
         idsPtr[0] = Int32(token)
         posPtr[0] = Int32(pos)
         maskPtr[pos] = 0
         let out = try model.prediction(from: features, using: state, options: options)
+        pos += 1
+        if tokenMode {
+            guard let arr = out.featureValue(for: "token")?.multiArrayValue else {
+                throw HarnessError("draft output missing 'token'")
+            }
+            return arr[0].intValue
+        }
         if let arr = out.featureValue(for: "logits")?.multiArrayValue,
-           !logitsBacking.isHonored(by: arr) {
+           let backing = logitsBacking, !backing.isHonored(by: arr) {
             throw HarnessError("E2 violation: draft logits backing not honored")
         }
-        pos += 1
+        return argmaxLogits()
     }
 
     private func argmaxLogits() -> Int {
+        guard let logitsPtr else { return 0 }
         var best = 0
         var bestVal = logitsPtr[0]
         for i in 1..<vocab where logitsPtr[i] > bestVal {
@@ -97,14 +123,15 @@ public final class CoreMLDraft: DraftTokenSource {
     }
 
     public func propose(k: Int, ingest: [Int]) throws -> [Int] {
-        for token in pendingIngest + ingest { try feed(token) }
+        precondition(!(pendingIngest + ingest).isEmpty, "propose needs at least one token to feed")
+        var next = 0
+        for token in pendingIngest + ingest { next = try feed(token) }
         pendingIngest = []
         var drafts: [Int] = []
         drafts.reserveCapacity(k)
         for _ in 0..<k {
-            let next = argmaxLogits()
             drafts.append(next)
-            if drafts.count < k { try feed(next) }
+            if drafts.count < k { next = try feed(next) }
         }
         pendingIngest = [drafts[k - 1]]
         return drafts
