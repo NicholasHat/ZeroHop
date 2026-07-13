@@ -427,3 +427,55 @@ that comparison; this is exactly the "abstraction tax" quantification the
 spec called publishable. The space is moving quickly (the private-API
 cluster gained visibility within months of this work); any claims here are
 time-stamped 2026-07 accordingly.
+
+## Full-protocol (10k-iteration) reruns — 2026-07-14
+
+Twelve headline cells rerun at the spec's full protocol (500 warmup +
+10,000 measured, release build, GPU-warm as noted). Values below supersede
+the 1k tables above where they differ; per-cell CSVs in Results/.
+
+**GPU idle-ramp (M1, sync/rt, e5=none):**
+
+| gpu-warm | t5→t6 p50 | p99 | p99.9 | max |
+|---|---|---|---|---|
+| none | 552 µs | 1.33 ms | 6.29 ms | 22.9 ms |
+| 10 ms trickle | 464 µs | 1.11 ms | 9.32 ms | 21.2 ms |
+| 2 ms trickle | 421 µs | 1.06 ms | 4.21 ms | 17.1 ms |
+| saturated | 72 µs | 165 µs | 657 µs | 8.95 ms |
+
+Two refinements over the 1k picture: (a) **trickle keep-warm does not
+remove the deep tail** — every trickle period still shows multi-ms p99.9;
+(b) even saturation only *thins* the extreme tail (~1-in-10k events still
+reach ~9 ms) — events at that rarity are more consistent with OS
+preemption/interrupt noise than GPU power state; per-event attribution via
+Instruments is future work.
+
+**E5 ANE warmth (M1, sync/rt, gpu-warm saturated):**
+
+| heartbeat | dispatch p50 | handoff p99 | handoff max |
+|---|---|---|---|
+| none | 292 µs | 117 µs | 327 µs |
+| 500 ms | 293 µs | 127 µs | 189 µs |
+| 100 ms | 301 µs | 126 µs | 438 µs |
+| 50 ms | 307 µs | 126 µs | 214 µs |
+| 10 ms | 303 µs | 126 µs | 193 µs |
+| saturated | 228 µs | 147 µs | 259 µs |
+
+**E5 conclusion revised:** the 1.5 ms "cold event" in the 1k none-cell did
+not reproduce at 10k — at a 20 Hz dispatch duty cycle the measured loop's
+own traffic is heartbeat enough; the entire heartbeat axis is flat, and
+explicit keep-warm buys nothing except saturation's ~22% dispatch-p50
+reduction. Genuinely cold ANE states require idle gaps this cadence never
+produces (slower-cadence sweep: future work).
+
+**M2 transport (gpu-warm saturated):**
+
+| read path | handoff p50 | p99 | p99.9 | max | E2 | E6 |
+|---|---|---|---|---|---|---|
+| A (IOSurface→texture) | 65 µs | 118 µs | 171 µs | 192 µs | honored ×10k | clean ×10k |
+| B (bytesNoCopy) | 66 µs | 129 µs | 173 µs | 230 µs | honored ×10k | clean ×10k |
+
+**E1 verdict revised:** the 1k-based "B marginally better" does not hold at
+10k — A and B are statistically indistinguishable; choose by GPU-side
+ergonomics (buffer vs texture reads). **E6 cumulative: zero stale reads in
+26,000+ measured iterations.**

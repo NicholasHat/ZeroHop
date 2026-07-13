@@ -55,8 +55,9 @@ def fig_handoff_gpuwarm() -> None:
     """Fig: handoff CCDF per GPU keep-warm level (the idle-ramp result)."""
     fig, ax = plt.subplots(figsize=(4.2, 2.8))
     for label, pattern in [("none", "m1-e3-sync_e4-rt_e5-none_gw-none"),
-                           ("10 ms", "gw-10"), ("2 ms", "gw-2"),
-                           ("saturated", "gw-saturated")]:
+                           ("10 ms", "m1-e3-sync_e4-rt_e5-none_gw-10"),
+                           ("2 ms", "m1-e3-sync_e4-rt_e5-none_gw-2"),
+                           ("saturated", "m1-e3-sync_e4-rt_e5-none_gw-saturated")]:
         run = newest(pattern)
         if run is None:
             continue
@@ -96,8 +97,7 @@ def fig_e5_warmth() -> None:
 
 def fig_stage_attribution() -> None:
     """Fig: per-stage box plot for the headline M1 cell."""
-    run = newest("gw-saturated") if newest("m1-e3-sync_e4-rt_e5-none_gw-saturated") is None \
-        else newest("m1-e3-sync_e4-rt_e5-none_gw-saturated")
+    run = newest("m1-e3-sync_e4-rt_e5-none_gw-saturated")
     if run is None:
         return
     stages = [("t0_t2_dispatch_ns", "dispatch\nt0→t2′"),
