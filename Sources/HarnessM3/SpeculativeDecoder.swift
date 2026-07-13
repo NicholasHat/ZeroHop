@@ -68,6 +68,27 @@ public final class MLXDraft: DraftTokenSource {
     }
 }
 
+extension MLXDraft: SamplingDraftSource {
+    public func proposeSampled(k: Int, ingest: [Int], temperature: Float,
+                               rng: inout SplitMix64) throws -> (tokens: [Int], dists: [[Float]]) {
+        var feed = pendingIngest + ingest
+        pendingIngest = []
+        var tokens: [Int] = []
+        var dists: [[Float]] = []
+        for _ in 0..<k {
+            let logits = model(MLXArray(feed).expandedDimensions(axis: 0), cache: cache)
+            let raw = logits[0, -1, 0...].asType(.float32).asArray(Float.self)
+            let q = Sampling.tempSoftmax(raw, temperature: temperature)
+            let next = Sampling.sample(q, rng: &rng)
+            tokens.append(next)
+            dists.append(q)
+            feed = [next]
+        }
+        pendingIngest = [tokens[k - 1]]
+        return (tokens, dists)
+    }
+}
+
 /// Target lane: batch-verifies k draft tokens in one forward pass and
 /// maintains the "next token" logits between rounds.
 public final class TargetVerifier {

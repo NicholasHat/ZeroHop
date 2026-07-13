@@ -145,3 +145,29 @@ public final class CoreMLDraft: DraftTokenSource {
         pendingIngest = []
     }
 }
+
+extension CoreMLDraft: SamplingDraftSource {
+    /// Stochastic proposals need the full q distribution per position, so
+    /// this path requires the logits-interface export (not the fused head).
+    public func proposeSampled(k: Int, ingest: [Int], temperature: Float,
+                               rng: inout SplitMix64) throws -> (tokens: [Int], dists: [[Float]]) {
+        guard !tokenMode, let logitsPtr else {
+            throw HarnessError("sampling requires a logits-interface draft model (fused-head export cannot provide q)")
+        }
+        for token in pendingIngest + ingest { try feed(token) }
+        pendingIngest = []
+        var tokens: [Int] = []
+        var dists: [[Float]] = []
+        for _ in 0..<k {
+            var raw = [Float](repeating: 0, count: vocab)
+            for i in 0..<vocab { raw[i] = Float(logitsPtr[i]) }
+            let q = Sampling.tempSoftmax(raw, temperature: temperature)
+            let next = Sampling.sample(q, rng: &rng)
+            tokens.append(next)
+            dists.append(q)
+            if tokens.count < k { try feed(next) }
+        }
+        pendingIngest = [tokens[k - 1]]
+        return (tokens, dists)
+    }
+}

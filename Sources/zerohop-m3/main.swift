@@ -29,6 +29,7 @@ var config = M3Config(
 )
 config.coremlDraftPath = flags["coreml-draft"]
 config.overlap = flags["overlap"] == "on"
+config.temperature = Float(flags["temp"] ?? "0") ?? 0
 let resultsRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     .appendingPathComponent("Results")
 

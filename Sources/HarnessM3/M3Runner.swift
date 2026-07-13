@@ -16,6 +16,9 @@ public struct M3Config {
     public var coremlDraftPath: String?
     /// M3.3: overlap the draft of batch N+1 with the verify of batch N.
     public var overlap = false
+    /// Sampling temperature; 0 = greedy. >0 uses Leviathan rejection
+    /// acceptance (serial loop; requires a logits-interface draft).
+    public var temperature: Float = 0
 
     public init(targetID: String, draftID: String, k: Int, tokens: Int, prompt: String) {
         self.targetID = targetID
@@ -64,6 +67,12 @@ public enum M3Runner {
         let draftPrompt = draftCtx.tokenizer.encode(text: config.prompt)
         if promptTokens != draftPrompt {
             print("WARNING: draft/target tokenizations differ (\(draftPrompt.count) vs \(promptTokens.count) tokens) — models must share a vocab for speculation to be sound")
+        }
+
+        if config.temperature > 0 {
+            try stochasticRun(targetCtx: targetCtx, draftCtx: draftCtx, config: config,
+                              env: env, resultsRoot: resultsRoot, promptTokens: promptTokens)
+            return
         }
 
         // --- speculative run --------------------------------------------------
@@ -171,6 +180,90 @@ public enum M3Runner {
         try sink.writeMeta(meta)
         try sink.writeSamplesCSV(iterationsOf: [draftTimes, verifyTimes, roundTimes])
         try sink.writeSummaries([draftTimes.summarize(), verifyTimes.summarize(), roundTimes.summarize()])
+        print("-> \(sink.dir.path)")
+    }
+
+    /// Stochastic (temperature > 0) serial speculation: Leviathan rejection
+    /// acceptance. No greedy-equivalence check exists here — matching the
+    /// target distribution is guaranteed by the acceptance construction.
+    static func stochasticRun(targetCtx: ModelContext, draftCtx: ModelContext,
+                              config: M3Config, env: EnvInfo, resultsRoot: URL,
+                              promptTokens: [Int]) throws {
+        guard !config.overlap else {
+            throw HarnessError("stochastic mode is serial-only in this PoC (overlap hit-detection is token-exact; sampled bonus matches are rare)")
+        }
+        let draft: SamplingDraftSource
+        let draftLane: String
+        if let coremlPath = config.coremlDraftPath {
+            print("draft lane: CoreML/ANE (\(coremlPath)), temperature \(config.temperature)")
+            draft = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
+                                    prompt: promptTokens)
+            draftLane = "coreml-ane"
+        } else {
+            draft = MLXDraft(model: draftCtx.model, prompt: promptTokens)
+            draftLane = "mlx-gpu"
+        }
+        let verifier = StochasticVerifier(model: targetCtx.model, prompt: promptTokens,
+                                          temperature: config.temperature)
+        var rng = SplitMix64(seed: 0xC0FFEE)
+
+        let n = config.tokens
+        let draftTimes = SampleRecorder(name: "draft_propose", capacity: n)
+        let verifyTimes = SampleRecorder(name: "target_verify", capacity: n)
+        var produced: [Int] = []
+        var acceptedDraftTotal = 0
+        var rounds = 0
+        var ingest: [Int] = []
+        let specStart = MachClock.now()
+        while produced.count < n {
+            let t0 = MachClock.now()
+            let (drafts, dists) = try draft.proposeSampled(
+                k: config.k, ingest: ingest, temperature: config.temperature, rng: &rng)
+            let t1 = MachClock.now()
+            let outcome = verifier.verify(drafts: drafts, draftDists: dists, rng: &rng)
+            let t2 = MachClock.now()
+            draftTimes.record(MachClock.toNanos(t1 - t0))
+            verifyTimes.record(MachClock.toNanos(t2 - t1))
+            if outcome.acceptedDrafts < config.k {
+                try draft.rollback((config.k - 1) - outcome.acceptedDrafts)
+            }
+            ingest = [outcome.accepted.last!]
+            produced.append(contentsOf: outcome.accepted)
+            acceptedDraftTotal += outcome.acceptedDrafts
+            rounds += 1
+        }
+        let specNS = MachClock.toNanos(MachClock.now() - specStart)
+        let specTokS = Double(produced.count) * 1e9 / Double(specNS)
+
+        let baselineVerifier = StochasticVerifier(model: targetCtx.model, prompt: promptTokens,
+                                                  temperature: config.temperature)
+        var baseRng = SplitMix64(seed: 0xC0FFEE)
+        let baseStart = MachClock.now()
+        let baseline = baselineVerifier.generateBaseline(n: produced.count, rng: &baseRng)
+        let baseNS = MachClock.toNanos(MachClock.now() - baseStart)
+        let baseTokS = Double(baseline.count) * 1e9 / Double(baseNS)
+        let acceptRate = Double(acceptedDraftTotal) / Double(rounds * config.k)
+
+        print("speculative: \(produced.count) tokens in \(SampleRecorder.fmt(specNS)) → \(String(format: "%.2f", specTokS)) tok/s")
+        print("baseline:    \(baseline.count) tokens in \(SampleRecorder.fmt(baseNS)) → \(String(format: "%.2f", baseTokS)) tok/s")
+        print("acceptance:  \(String(format: "%.1f%%", acceptRate * 100)) of drafts (k=\(config.k), T=\(config.temperature)), \(String(format: "%.2f", Double(produced.count) / Double(rounds))) tokens/verify-round")
+        print("speedup:     \(String(format: "%.2fx", specTokS / baseTokS))")
+        printSummaryTable([draftTimes.summarize(), verifyTimes.summarize()])
+        print("text: \(targetCtx.tokenizer.decode(tokens: Array(produced.prefix(60))))…")
+
+        let sink = try ResultSink(resultsRoot: resultsRoot, milestone: "m3",
+                                  cellName: "\(draftLane)_k\(config.k)_T\(config.temperature)")
+        var meta = ResultSink.Meta(
+            milestone: "m3",
+            cell: ["target": config.targetID, "draft": config.draftID,
+                   "k": String(config.k), "draft_lane": draftLane,
+                   "temperature": String(config.temperature)],
+            env: env, warmupIterations: 0, measuredIterations: rounds)
+        meta.notes.append("stochastic \(String(format: "%.2f", specTokS)) vs baseline \(String(format: "%.2f", baseTokS)) tok/s (\(String(format: "%.2fx", specTokS / baseTokS)))")
+        meta.notes.append("acceptance \(String(format: "%.3f", acceptRate)) at T=\(config.temperature); target distribution exact by construction (Leviathan rejection acceptance)")
+        try sink.writeMeta(meta)
+        try sink.writeSamplesCSV(iterationsOf: [draftTimes, verifyTimes])
+        try sink.writeSummaries([draftTimes.summarize(), verifyTimes.summarize()])
         print("-> \(sink.dir.path)")
     }
 
