@@ -67,9 +67,27 @@ class SliceUpdateCache(Cache):
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
         pos = cache_kwargs["cache_position"] if cache_kwargs else None
-        begin, end = pos[0], pos[0] + key_states.shape[2]
-        self.k[layer_idx, :, :, begin:end, :] = key_states
-        self.v[layer_idx, :, :, begin:end, :] = value_states
+        # Cache write via ONE-HOT blend — the only formulation that survives
+        # every constraint at once:
+        #  - begin:end slice bounds get BAKED to trace-time constants by
+        #    torch.jit.trace (everything wrote slot 0; caught by the
+        #    torch-vs-CoreML greedy A/B),
+        #  - advanced indexing (index_put_) trips a coremltools frontend
+        #    dtype clash (fp16 update vs fp32-upcast state read),
+        #  - fp32 state is rejected by the backend (states must be fp16).
+        # One-hot is elementwise/matmul fp16 throughout: w[s,c]=1 where
+        # column c == cache_position[s]; contributions scatter the new K/V
+        # into their slots; the buffer assignment uses only the static
+        # layer index.
+        ctx = self.k.shape[3]
+        slots = torch.arange(ctx, dtype=pos.dtype)
+        oh = (slots.unsqueeze(0) == pos.unsqueeze(1)).to(key_states.dtype)  # [seq, CTX]
+        w = oh.sum(0).view(1, 1, ctx, 1)
+        ohT = oh.transpose(0, 1)                       # [CTX, seq]
+        contrib_k = torch.matmul(ohT, key_states)      # -> [b, h, CTX, d]
+        contrib_v = torch.matmul(ohT, value_states)
+        self.k[layer_idx] = self.k[layer_idx] * (1 - w) + contrib_k
+        self.v[layer_idx] = self.v[layer_idx] * (1 - w) + contrib_v
         # Return the FULL fixed window, not [:end]: a tensor-valued slice end
         # makes the whole attention graph dynamic and the ANE compiler rejects
         # every op (observed: all ops supported=[cpu]). The causal mask input
@@ -80,6 +98,9 @@ class SliceUpdateCache(Cache):
 class StatefulDraft(torch.nn.Module):
     def __init__(self, model_id: str, context: int):
         super().__init__()
+        # ALL-fp16: the frontend requires a dtype-consistent traced graph and
+        # the backend requires fp16 states, so fp16 model + fp16 buffers is
+        # the only viable combination.
         self.model = LlamaForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
         cfg = self.model.config
         cache_shape = (
@@ -105,7 +126,7 @@ class StatefulDraft(torch.nn.Module):
         return out.logits
 
 
-def convert(outdir: str, seq_len: int = 1) -> None:
+def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans") -> None:
     """Fully static shapes: [1, seq_len] tokens against the fixed CONTEXT
     window. seq_len=1 is the decode-step model (prefill feeds the prompt one
     token at a time — a one-time cost per generation). Static shapes are also
@@ -147,14 +168,20 @@ def convert(outdir: str, seq_len: int = 1) -> None:
     import coremltools.optimize as cto
     config = cto.coreml.OptimizationConfig(
         global_config=cto.coreml.OpPalettizerConfig(
-            mode="kmeans", nbits=4, granularity="per_grouped_channel", group_size=16))
+            mode=mode, nbits=nbits, granularity="per_grouped_channel", group_size=16))
     mlmodel = cto.coreml.palettize_weights(mlmodel, config)
 
-    suffix = "" if seq_len == 1 else f"_s{seq_len}"
+    suffix = ("" if seq_len == 1 else f"_s{seq_len}") + (f"_{nbits}bit" if nbits != 4 else "")
     path = f"{outdir}/draft_llama32_1b{suffix}.mlpackage"
     mlmodel.save(path)
     print(f"wrote {path}")
 
 
 if __name__ == "__main__":
-    convert(sys.argv[1] if len(sys.argv) > 1 else "Models")
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("outdir", nargs="?", default="Models")
+    p.add_argument("--nbits", type=int, default=4)
+    p.add_argument("--mode", default="kmeans")
+    a = p.parse_args()
+    convert(a.outdir, nbits=a.nbits, mode=a.mode)

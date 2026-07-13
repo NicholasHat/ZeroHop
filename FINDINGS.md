@@ -238,6 +238,74 @@ public API — first known instance of ANE-draft speculative decoding — and
 the measured gap decomposes into two named, addressable levers (ANE dispatch
 amortization via E8-style multi-token heads; palettization quality).
 
+## M3.2 follow-up — the acceptance collapse was a draft bug, not quantization
+
+A 6-bit rerun left acceptance unchanged (11.5% vs 11.2%) — falsifying the
+quantization hypothesis. A torch-vs-CoreML greedy A/B (the missing
+draft-health assertion; now part of the conversion protocol) showed the
+CoreML model degenerating into token repetition: **`torch.jit.trace` bakes
+Python slice bounds to their trace-time constants**, so the KV write
+`k[..., begin:end, :] = …` silently stored every token in slot 0. The
+benchmark's greedy-equivalence check could never catch this — the target
+corrects every wrong draft, so output stays perfect while acceptance craters.
+
+Fixing the write took threading three constraints at once (each hit
+empirically): slice bounds bake under trace; `index_put_` advanced indexing
+trips a coremltools frontend dtype clash (fp16 update vs fp32-upcast state
+read); fp32 states are rejected by the backend (states must be fp16). The
+formulation that survives all three is a **one-hot blend**:
+`cache = cache·(1−w) + onehot(pos)ᵀ·kv` — pure fp16 elementwise + matmul,
+ANE-native, no dynamic indexing.
+
+**Fixed draft vs 3B target: acceptance 49.6%** (better than the MLX 4-bit
+draft's 36.7% — the fp16 ANE draft tracks the target more faithfully),
+2.99 tokens/round, 20.6 tok/s vs 46.2 baseline (0.45×), draft propose
+75.4 ms p50 (~19 ms/token on the ANE). Against the 3B target the GPU
+baseline is simply too fast for a 1B serial draft; the spec-faithful 8B
+matrix follows.
+
+## 8B target matrix (spec §2 configuration) — the decisive table
+
+Meta-Llama-3.1-8B-Instruct-4bit target, k=4, 204 tokens, greedy, serial loop
+(no overlap). Both cells: greedy equivalence PASS, acceptance **85.9%**,
+4.43 tokens/verify-round — a 1B Llama is an outstanding speculator for the
+8B at temperature 0.
+
+| cell | draft propose p50 | verify p50 | tok/s | vs baseline 19.1 |
+|---|---|---|---|---|
+| GPU-only baseline | — | — | 19.1 | 1.00× |
+| MLX draft (same GPU) | 42.7 ms | 135.5 ms | 24.8 | **1.28×** |
+| ANE draft (serial) | 95.6 ms | 144.4 ms | 18.2 | 0.95× |
+
+### Final §2 arithmetic, all constants measured
+
+```
+T_draft(k=4)   =  95.6 ms   (1B fp16/6-bit-LUT on ANE, 4 sequential calls)
+T_handoff(p99) ≈   0.15 ms  (M1/M2, GPU kept busy — negligible)
+T_verify       = 144.4 ms   (8B-4bit scoring k+1 positions on Metal)
+
+95.6 + 0.15  <  144.4  ✓  — the spec §2 viability inequality HOLDS.
+```
+
+The draft fits *inside* the verify window with 34% margin. That is the
+architectural go signal: with the M3.3 overlap (draft batch N+1 on the ANE
+while the GPU verifies batch N), the round time collapses to ~T_verify:
+
+- projected pipelined heterogeneous: 4.43 tokens / 144.4 ms ≈ **30.7 tok/s
+  ≈ 1.6× baseline** — and unlike the MLX draft, the ANE draft consumes zero
+  GPU time, so the projection doesn't cannibalize verify. The GPU-draft
+  variant cannot pipeline this way at all (draft and verify serialize on the
+  same device); its measured 24.8 tok/s is close to its ceiling.
+- ANE per-call latency remains the top optimization target (~24 ms/token at
+  8B-run conditions vs 42.7 ms/k=4 for MLX): an E8-style multi-token head
+  would cut propose toward one dispatch (~30–40 ms), pushing the pipelined
+  budget toward k=6–8.
+
+**Verdict: GO.** Serial break-even today; the measured constants satisfy the
+spec's §2 inequality with margin, and the overlap implementation (M3.3) is
+projected to beat both the baseline (1.6×) and same-device speculation
+(1.24× relative) — with the draft entirely off the GPU.
+
 ## Open items
 
 - E5 warmth curve interpretation (bimodality per period).

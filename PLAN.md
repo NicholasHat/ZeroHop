@@ -165,10 +165,20 @@ Headline metric **t2′→t6**; sub-segments t2′→t4 (scheduler), t4→t5 (or
 
 Generated from `Results/` by `Tools/plot_results.py`: full histograms per matrix cell, per-stage attribution, E5 warmth curve, E6 canary verdict, E1/E2 backing findings, §2 go/no-go arithmetic with measured constants (noise floor, T_handoff p99, T_draft, T_verify, rejection margin). Negative results reported with the same rigor.
 
-## 8. Build order & session status
+## 8. Build order & status
 
 1. ✅ SDK verification (this document, §0)
-2. HarnessCore + M0 → run → results
-3. M1 model gen + harness → run E3/E4/E5 → kill-criterion checkpoint
-4. M2 → E1/E2/E6/E7/E8
-5. M3/M4 gated on M1 verdict
+2. ✅ HarnessCore + M0 — noise floor: xwake/rt p99 10.2 µs
+3. ✅ M1 — kill criterion PASS (p99 handoff 855–914 µs, →130 µs GPU-warm);
+   biggest surprise: GPU idle-ramp dominates, added `--gpu-warm` axis
+4. ✅ M2 — both zero-copy paths real, E6 canary clean, E7 null, E8 decisive
+5. ✅ M3.1 — MLX speculative loop, greedy-equivalence PASS; same-device
+   control = 0.58× (the number that motivates heterogeneity)
+6. ✅ M3.2 — 1B stateful Llama draft on the ANE (recipe: fixed-window
+   attention + MLState + ≤1 GB palettized weights); heterogeneous pipeline
+   proven correct; 0.15× at k=4/3B with two named levers (per-call ANE
+   latency → multi-token head; 4-bit acceptance collapse → 6-bit LUT)
+7. ⏳ 6-bit draft A/B; 8B target (spec-faithful §2 arithmetic); M3.3 overlap
+   gated on the config becoming draft-fast; M4 writeup from FINDINGS.md
+
+Measured detail lives in FINDINGS.md; per-run raw data in Results/.
