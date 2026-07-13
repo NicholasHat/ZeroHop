@@ -31,9 +31,16 @@ than default** on this build — recheck on other macOS versions.
 ## M1 — empty-model round trip (E3 × E4, 1500 iters/cell, no GPU warm)
 
 - **Dispatch (t0→t2′)**: ~1.0 ms p50 / ~1.3–1.6 ms p99 for a 4-conv fp16
-  ANE model. This re-derives the "0.095 ms" figure from the spec's claims
-  registry: **the public CoreML round trip costs ~10× that**; the Orion number
-  presumably measures a lower layer.
+  ANE model (debug build; ~300 µs p50 in release — see the methodology-bug
+  note below). This re-derives the "~0.095 ms" dispatch figure from the
+  spec's claims registry: **the public CoreML round trip costs ~3× that
+  (release build)**. Attribution correction: that figure originates from
+  maderix's ANE reverse-engineering benchmarks (XPC + IOKit dispatch
+  overhead via the private `_ANEClient` path), which Orion credits — it is
+  not an Orion measurement, and it measures the *private* dispatch layer.
+  The ~200 µs gap between it and our ~300 µs is a first estimate of the
+  public-API (CoreML) tax on the dispatch path — exactly the "abstraction
+  tax" number spec §7 item 5 asked for.
 - **E3 (completion style)**: sync wins at p50 (637 µs vs 714 µs async vs
   711 µs naive) but all three converge at p99 (~855–890 µs) because **t5→t6
   dominates** (below). The libdispatch hop the spec feared (stage 4) measures
@@ -234,9 +241,11 @@ no overlap yet):
   draft) before overlap pays.
 
 **Standing result:** the architecture is *mechanically* proven end to end on
-public API — first known instance of ANE-draft speculative decoding — and
-the measured gap decomposes into two named, addressable levers (ANE dispatch
-amortization via E8-style multi-token heads; palettization quality).
+public API — as of July 2026 we found no published characterization of
+two-model ANE-draft/GPU-verify speculation through public CoreML (see the
+landscape section at the end) — and the measured gap decomposes into two
+named, addressable levers (ANE dispatch amortization via E8-style
+multi-token heads; palettization quality).
 
 ## M3.2 follow-up — the acceptance collapse was a draft bug, not quantization
 
@@ -377,3 +386,44 @@ pipelined, 8B target (ratios are the robust metric; these ran on battery):
   ~1 ms dispatch across stages 2–3 (aned/XPC vs firmware).
 - M3 (real models) gated on nothing now — kill criterion passed; target-side
   runtime choice per PLAN §6.
+
+## Landscape as of July 2026 (related work; framing for the report)
+
+A targeted search (2026-07-13) found no published characterization of
+public-API, two-model (separate draft + target) ANE↔GPU speculative decoding
+with handoff measurement on consumer Apple Silicon. Three close neighbors,
+all of which belong in the report:
+
+- **`ane.cpp`** — experimental "speculative decode" flag for Qwen3, but
+  *self*-speculative (truncated layers of the same model as the draft),
+  ANE-only, via the reverse-engineered private `_ANEClient` API; the
+  project's own notes report it currently slower than plain decoding. A
+  useful negative result: naive self-speculation on the ANE doesn't
+  trivially pay. Different architecture on all three axes (single model,
+  single accelerator, private API).
+- **`maderix/ANE`** — the reverse-engineering effort Orion credits as
+  foundational. Includes demo scripts for GPU↔ANE zero-copy IOSurface
+  transport and a GPU-prefill→ANE-decode pipeline — the handoff *concept*
+  shown, though as demos on the private API, without rigorous latency
+  characterization. **Attribution correction propagated through this
+  document:** the ~0.095 ms dispatch figure originates from maderix's
+  benchmarking (XPC + IOKit, private path), credited by Orion — not from
+  Orion's own measurements.
+- **`CoreML-LLM`** — public-API, ANE-only LLM inference (no GPU pairing,
+  no speculation): evidence the sanctioned path is viable for inference
+  per se.
+
+**The honest framing this dictates:** every serious ANE performance effort
+found (maderix, Orion, ane.cpp, ANE training work) abandoned the public
+CoreML API for reverse-engineered private access — precisely the escape
+hatch spec §7 item 5 gated off by default. The gap this project fills is
+therefore probably not overlooked white space; it is the path the
+knowledgeable avoided *because of* its overhead. That makes the
+contribution "the measured cost and viability of the sanctioned path" —
+directly useful to anyone who must ship through the App Store — rather than
+a novelty claim. The public-vs-private dispatch delta (~300 µs release-build
+CoreML round trip vs ~95 µs private-path dispatch) is the first number of
+that comparison; this is exactly the "abstraction tax" quantification the
+spec called publishable. The space is moving quickly (the private-API
+cluster gained visibility within months of this work); any claims here are
+time-stamped 2026-07 accordingly.

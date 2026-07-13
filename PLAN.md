@@ -124,7 +124,7 @@ Headline metric **t2′→t6**; sub-segments t2′→t4 (scheduler), t4→t5 (or
 - **E3** completion style: (a) sync `prediction()` on the pinned thread — thread parked in-kernel, handoff work inline; (b) async completion handler (which arrives on a CoreML-owned queue) doing only a semaphore-signal to the dedicated handoff thread. Note: the truly naive arm (do everything in the handler on a dispatch queue) is included as a third level for the “abstraction tax” comparison.
 - **E4** thread policy: the M0 three, applied to the prediction/handoff thread.
 - **E5** warmth: heartbeat prediction from a low-priority thread at swept period {none, 500 ms, 100 ms, 50 ms, 10 ms, saturated}; measured cell runs at a fixed 20 Hz dispatch rate so cold gaps come only from the sweep variable. Histograms segmented; bimodality reported explicitly (bucket render makes it visible).
-- Re-derivation of the 0.095 ms dispatch figure: t0→t2′ distribution is exactly this number, measured (spec §1, §9 item 9).
+- Re-derivation of the 0.095 ms dispatch figure: t0→t2′ distribution is exactly this number, measured (spec §1, §9 item 9). *(Attribution note, added later: the figure originates from maderix's private-API ANE benchmarks, credited by Orion — not from Orion's own measurement.)*
 
 **csv schema:** `iter, t0, t2p, t4, t5, t6_gpu, t6_cpu_ns, handoff_ns, thermal_ok, warm_state`.
 
