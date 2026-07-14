@@ -85,7 +85,7 @@ On a single engine: ane.cpp's *self*-speculation on the ANE is slower than plain
 | [`Tools/convert_draft.py`](Tools/convert_draft.py) | the ANE deployment recipe, executable |
 | [`Tools/plot_results.py`](Tools/plot_results.py) | regenerates every figure from `Results/` raw data |
 | [`FINDINGS.md`](FINDINGS.md) | the full lab notebook, chronological — including the superseded claims and their revisions |
-| [`PLAN.md`](PLAN.md) · [`hsd-ane-gpu-spec.md`](hsd-ane-gpu-spec.md) | the implementation plan + SDK audit, and the spec the project ran on |
+| [`PLAN.md`](PLAN.md) | the implementation plan + SDK audit (responds to a project spec not included in the repo) |
 
 The measurement binary (`zerohop`) has zero third-party dependencies; MLX is confined to the separate end-to-end runner (`zerohop-m3`).
 
