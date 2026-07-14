@@ -38,7 +38,7 @@ than default** on this build — recheck on other macOS versions.
   maderix's ANE reverse-engineering benchmarks (XPC + IOKit dispatch
   overhead via the private `_ANEClient` path), which Orion credits — it is
   not an Orion measurement, and it measures the *private* dispatch layer.
-  The ~200 µs gap between it and our ~300 µs is a first estimate of the
+  The ~200 µs gap between it and my ~300 µs is a first estimate of the
   public-API (CoreML) tax on the dispatch path — exactly the "abstraction
   tax" number spec §7 item 5 asked for.
 - **E3 (completion style)**: sync wins at p50 (637 µs vs 714 µs async vs
@@ -246,7 +246,7 @@ no overlap yet):
   draft) before overlap pays.
 
 **Standing result:** the architecture is *mechanically* proven end to end on
-public API — as of July 2026 we found no published characterization of
+public API — as of July 2026 I found no published characterization of
 two-model ANE-draft/GPU-verify speculation through public CoreML (see the
 landscape section at the end) — and the measured gap decomposes into two
 named, addressable levers (ANE dispatch amortization via E8-style
@@ -443,7 +443,7 @@ Four additional neighbors found; none is an exact match, but two matter a lot:
   target-side correction paths; 2.8–5.8× on server-scale models (14B–66B,
   SpecBench). The abstract names no concrete NPU/GPU hardware, no consumer
   device, no public-API constraint, and no handoff characterization — it is
-  an algorithm/systems paper at server scale. Our work is best framed as the
+  an algorithm/systems paper at server scale. My work is best framed as the
   consumer-device, public-API, measured realization of the class of design
   Mirror-SD describes. (Cite prominently; the cross-engine speculation idea
   is Apple's published work.)
@@ -452,7 +452,7 @@ Four additional neighbors found; none is an exact match, but two matter a lot:
   0.6B draft, 2.28×, 7.4→16.8 tok/s), via the private `aned` stack
   (explicitly skips CoreML), no GPU pairing, no handoff measurement. Their
   observation that "speculative verify is near-free on the ANE
-  (verify(K) ≈ verify(1))" independently corroborates our E8/§2 premise on
+  (verify(K) ≈ verify(1))" independently corroborates my E8/§2 premise on
   different silicon paths. Strengthens the private-API-cluster pattern —
   and shows single-engine two-model speculation pays where ane.cpp's
   self-speculation did not.
