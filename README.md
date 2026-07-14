@@ -1,11 +1,17 @@
 # ZeroHop
 
-Measurement harness for **heterogeneous speculative decoding on Apple Silicon**:
-a draft model on the Apple Neural Engine feeding a verify pass on the Metal GPU,
-with the ANE→GPU handoff latency as the quantity under test.
+Speculative decoding across the **Apple Neural Engine and GPU on one consumer
+chip, via public APIs**: a 1B draft model on the ANE (Core ML), an 8B target
+on the GPU (MLX/Metal), and a measurement harness for the seam between them.
+**Result: 1.47× over the GPU-only baseline, with the entire draft hidden
+inside the GPU's verify window (overlap span = verify p50 within 2 µs) and
+token-exact output.**
 
-- Spec: [`hsd-ane-gpu-spec.md`](hsd-ane-gpu-spec.md)
-- Implementation plan + SDK verification: [`PLAN.md`](PLAN.md)
+- **📄 Read the report:** [`REPORT.md`](REPORT.md) — the full measurement
+  study: handoff characterization, the ANE deployment recipe, end-to-end
+  results, and the July-2026 landscape.
+- Lab notebook (every experiment, chronological): [`FINDINGS.md`](FINDINGS.md)
+- Spec: [`hsd-ane-gpu-spec.md`](hsd-ane-gpu-spec.md) · plan + SDK audit: [`PLAN.md`](PLAN.md)
 
 ## Requirements
 

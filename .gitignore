@@ -5,4 +5,4 @@ Models/
 Results/
 __pycache__/
 REPORT_OUTLINE.md
-Figures/
+Figures/*.pdf
