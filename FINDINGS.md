@@ -433,6 +433,47 @@ spec called publishable. The space is moving quickly (the private-API
 cluster gained visibility within months of this work); any claims here are
 time-stamped 2026-07 accordingly.
 
+### Landscape addendum (web sweep, 2026-07-15)
+
+Four additional neighbors found; none is an exact match, but two matter a lot:
+
+- **Mirror-SD (Apple ML Research, arXiv:2510.13161, Dec 2025)** — the
+  *concept* prior art: speculative decoding explicitly mapped across
+  heterogeneous accelerators (GPU + NPU) with cross-device parallelism and
+  target-side correction paths; 2.8–5.8× on server-scale models (14B–66B,
+  SpecBench). The abstract names no concrete NPU/GPU hardware, no consumer
+  device, no public-API constraint, and no handoff characterization — it is
+  an algorithm/systems paper at server scale. Our work is best framed as the
+  consumer-device, public-API, measured realization of the class of design
+  Mirror-SD describes. (Cite prominently; the cross-engine speculation idea
+  is Apple's published work.)
+- **ANEForge (github sbryngelson/ANEForge, v0.2.0 June 2026)** — two-model
+  *exact speculative decoding with BOTH models on the ANE* (Qwen3-8B +
+  0.6B draft, 2.28×, 7.4→16.8 tok/s), via the private `aned` stack
+  (explicitly skips CoreML), no GPU pairing, no handoff measurement. Their
+  observation that "speculative verify is near-free on the ANE
+  (verify(K) ≈ verify(1))" independently corroborates our E8/§2 premise on
+  different silicon paths. Strengthens the private-API-cluster pattern —
+  and shows single-engine two-model speculation pays where ane.cpp's
+  self-speculation did not.
+- **SqueezeBits "Yetter" (blog, Aug 2025)** — *public-API cross-engine*
+  LLM serving on consumer Apple hardware (iPhone 15 Pro): CoreML/ANE
+  prefill + MLX/GPU decode. Prefill/decode disaggregation, not speculation;
+  no ANE↔GPU handoff characterization; engine unreleased at publication.
+  The closest public-API cross-engine neighbor.
+- **CPU+GPU heterogeneous speculation exists in the literature** —
+  DuoDecoding (arXiv:2503.00784; draft on CPU, target on GPU, parallel,
+  up to 2.61×) and Dovetail (arXiv:2412.18934). The NPU/ANE variant on
+  consumer silicon with a measured handoff remains unoccupied.
+- Also for completeness: mlx-community/speculative-decoding (MLX-Swift,
+  GPU-only) and Apple's ReDrafter (RNN draft head, Metal GPU, 2.3×).
+
+**Updated positioning sentence:** the four axes are (1) two-model
+speculation, (2) ANE-draft + GPU-verify cross-engine on one consumer chip,
+(3) public API only, (4) rigorous handoff/tail characterization. Every
+neighbor holds at most two of the four; this work holds all four.
+
+
 ## Full-protocol (10k-iteration) reruns — 2026-07-14
 
 Twelve headline cells rerun at the spec's full protocol (500 warmup +
