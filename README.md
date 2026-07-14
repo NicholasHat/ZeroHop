@@ -2,7 +2,7 @@
 
 **Speculative decoding across the Apple Neural Engine and GPU — on one consumer chip, via public APIs only.**
 
-A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (MLX/Metal), and a purpose-built measurement harness characterizes the seam between them. Apple M3 · 16 GB · macOS 26.5.1 · July 2026.
+A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (MLX/Metal), and a measurement harness characterizes the seam between them. Apple M3 · 16 GB · macOS 26.5.1 · July 2026.
 
 ## Results
 
@@ -22,20 +22,20 @@ A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (ML
 
 ![k-sweep](Figures/k_sweep.png)
 
-### Boundary conditions (the negatives are findings too)
+### Boundary conditions
 
 - Against a **fast 3B target speculation loses everywhere** (same-GPU 0.58×, ANE serial 0.45×) — the win regime is the memory-bound large-target regime the theory predicts.
 - **k has a knee at 6**: at k=8, acceptance decay (78% → 73%) and verify-window growth outpace tokens/round.
 - **Sampling halves acceptance** (T=0.8: 44.6% ANE / 29.9% GPU draft) and serial speculation goes unprofitable — the known temperature sensitivity of speculation. The fp16-activation ANE draft agrees with the target's distribution notably better than the end-to-end 4-bit GPU draft in both regimes.
 
-## What the harness found on the way
+## Harness findings
 
 The project ran measurement-first: a synchronization harness with an explicit kill criterion (p99 handoff > 2 ms ⇒ stop) ran before any model existed. Everything is reported as p50/p95/p99/p99.9 over ≥10,000 iterations per cell — **means are never a success criterion**. Highlights:
 
-- **The dominant tail effect is a GPU idle-ramp nobody documents** — not ANE cold-start. Uncontrolled: p99 1.33 ms, p99.9 6.29 ms, max 22.9 ms on the event-signal→kernel-start segment. A saturated GPU collapses it to p99 165 µs; trickle keep-warm does *not* remove the deep tail; the surviving ~1-in-10k events are run-to-run ambient (OS preemption, not power state — established by a repeat run).
+- **The dominant tail effect is an undocumented GPU idle-ramp** — not ANE cold-start. Uncontrolled: p99 1.33 ms, p99.9 6.29 ms, max 22.9 ms on the event-signal→kernel-start segment. A saturated GPU collapses it to p99 165 µs; trickle keep-warm does *not* remove the deep tail; the surviving ~1-in-10k events are run-to-run ambient (OS preemption, not power state — established by a repeat run).
 - **The ANE warmth axis is flat** at a 20 Hz dispatch duty cycle: the workload's own traffic is heartbeat enough. (A 1k-iteration run had shown a "cold event" that vanished at 10k — one of two conclusions the full protocol reversed.)
 - **Both zero-copy ANE→GPU transport paths are real** (IOSurface→`MTLTexture`, and page-aligned `makeBuffer(bytesNoCopy:)`), verified by per-iteration backing-identity asserts; statistically indistinguishable at 10k. A coherency canary — computed by the ANE's own matmul, validated by the GPU kernel before reading the payload — has **zero stale reads in 26,000+ iterations**.
-- **The public-API tax, first numbers**: a minimal ANE dispatch round trip costs ~300 µs p50 through release-build Core ML vs the ~95 µs private-path figure from maderix's benchmarking (bounds, not isolates, the tax). Sharper edges: Core ML's cost model **refuses per-token-scale ANE dispatches outright** (multi-token drafting is structurally mandatory), and the ANE compiler rejects **compiled weights above ~1 GB** (2.3 GB fp16 → wholesale CPU; 591 MB 4-bit palettized → `preferred=ane`).
+- **Public-API dispatch overhead**: a minimal ANE dispatch round trip costs ~300 µs p50 through release-build Core ML vs the ~95 µs private-path figure from maderix's benchmarking (this bounds the overhead; it doesn't isolate it). Core ML's cost model **refuses per-token-scale ANE dispatches** (multi-token drafting is required, not just faster), and the ANE compiler rejects **compiled weights above ~1 GB** (2.3 GB fp16 → wholesale CPU; 591 MB 4-bit palettized → `preferred=ane`).
 - ![handoff CCDF per GPU keep-warm level](Figures/handoff_gpuwarm_ccdf.png)
 
 ## The ANE deployment recipe
@@ -49,9 +49,9 @@ Getting a real stateful-KV-cache Llama-3.2-1B onto the ANE through public API hi
 | 3 | still all-CPU at fp16 | **≤1 GB compiled-weight ceiling** → 4/6-bit LUT palettization |
 | 4 | acceptance collapsed to 11% | `torch.jit.trace` **bakes slice bounds to constants** — every KV write hit cache slot 0; fix = **one-hot blend write** `cache·(1−w)+onehot(pos)ᵀ·kv` |
 
-Wall 4 was invisible to output correctness (the target corrects every wrong draft — only the acceptance rate betrayed it); a torch-vs-Core ML greedy A/B is now a mandatory draft-health assertion. Structural dividend of the fix: speculation rollback is **O(1)** — move the position pointer, re-mask, no cache surgery.
+Wall 4 was invisible to output correctness (the target corrects every wrong draft — only the acceptance rate betrayed it); a torch-vs-Core ML greedy A/B is now a mandatory draft-health assertion. A side effect of the fix: speculation rollback is **O(1)** — move the position pointer, re-mask, no cache surgery.
 
-## Landscape: how this is unique (as of July 2026)
+## Landscape (July 2026)
 
 No published work I could find holds all four of: **(1)** two-model speculation, **(2)** ANE-draft + GPU-verify on one consumer chip, **(3)** public API only, **(4)** rigorous handoff characterization. Every neighbor holds at most two:
 
@@ -67,13 +67,13 @@ No published work I could find holds all four of: **(1)** two-model speculation,
 | [DuoDecoding](https://arxiv.org/abs/2503.00784) / [Dovetail](https://arxiv.org/abs/2412.18934) | CUDA-class PCs | CPU draft + GPU target | ✔ two-model | different platform |
 | **ZeroHop** | **public Core ML + Metal** | **ANE draft + GPU verify, one chip** | **✔ two-model exact** | **✔ per-stage, 10k protocol** |
 
-Three honest notes this table demands:
+Notes:
 
-- **[Mirror-SD](https://arxiv.org/abs/2510.13161) is the concept prior art**: Apple's own research maps speculation across heterogeneous accelerators (GPU + NPU) at server scale (2.8–5.8×, 14B–66B) — but names no consumer device, imposes no public-API constraint, and characterizes no handoff. ZeroHop is best read as the consumer-silicon, sanctioned-path, measured realization of that design class.
-- **The gap is probably not oversight.** Everyone with deep ANE expertise (maderix, Orion, ane.cpp, ANEForge) went to private APIs *because* Core ML's black-box scheduler stood between them and performance. The measured cost of staying sanctioned — the only path App Store software can ship — is exactly the contribution.
+- **[Mirror-SD](https://arxiv.org/abs/2510.13161) is the concept prior art**: Apple's own research maps speculation across heterogeneous accelerators (GPU + NPU) at server scale (2.8–5.8×, 14B–66B) — but names no consumer device, imposes no public-API constraint, and characterizes no handoff. ZeroHop is a consumer-silicon, public-API implementation of that design class, with the handoff measured.
+- **The gap is probably not oversight.** Prior ANE work (maderix, Orion, ane.cpp, ANEForge) uses private APIs, citing Core ML's scheduler overhead. This project measures what the public path — the only one App Store software can ship — actually costs.
 - **Attribution correction**: the widely-quoted ~0.095 ms ANE dispatch figure originates from maderix's private-API benchmarking (credited by Orion) — it is not an Orion measurement.
 
-Bracketing the single-engine story: ane.cpp's *self*-speculation on the ANE is slower than plain decoding (draft and verify serialize on one engine — the same contention as the same-GPU control above), while ANEForge's two-model speculation on the ANE alone reaches 2.28×. The cross-engine cell — drafting free on an otherwise idle accelerator — is the one ZeroHop occupies.
+On a single engine: ane.cpp's *self*-speculation on the ANE is slower than plain decoding (draft and verify serialize on one engine — the same contention as the same-GPU control above); ANEForge's two-model speculation on the ANE alone reaches 2.28×. ZeroHop runs the draft on an engine that is otherwise idle.
 
 ## Repository map
 
@@ -118,7 +118,7 @@ Protocol: ≥500 warmup + ≥10,000 measured iterations per cell, **release buil
 
 ## Limitations
 
-One chip (findings are expected to vary by ANE generation — raw data ships for replication); greedy is the optimized regime; the ANE draft is per-call latency-bound (~14–20 ms/token — a trained [Medusa](https://arxiv.org/abs/2401.10774)-class multi-token head is the obvious next lever, and uniquely attractive here since its gains convert to speculation-window headroom rather than device contention); energy unmeasured (`powermetrics` needs root); the public-vs-private tax number bounds rather than isolates.
+One chip (findings are expected to vary by ANE generation — raw data ships for replication); greedy is the optimized regime; the ANE draft is per-call latency-bound (~14–20 ms/token; a trained [Medusa](https://arxiv.org/abs/2401.10774)-class multi-token head would cut this, and its gains convert to speculation-window headroom rather than device contention); energy unmeasured (`powermetrics` needs root); the public-vs-private tax number bounds rather than isolates.
 
 ## References
 
@@ -133,4 +133,4 @@ One chip (findings are expected to vary by ANE generation — raw data ships for
 - SqueezeBits. *Disaggregated Inference on Apple Silicon: NPU Prefill and GPU Decode.* [blog](https://blog.squeezebits.com/disaggregated-inference-on-apple-silicon-npu-prefill-and-gpu-decode-67176)
 - vllm-mlx [arXiv:2601.19139](https://arxiv.org/abs/2601.19139) · Apple-Silicon runtime comparison [arXiv:2511.05502](https://arxiv.org/abs/2511.05502)
 
-*Landscape statements are time-stamped July 2026; this space is moving quickly.*
+*Landscape statements are as of July 2026.*
