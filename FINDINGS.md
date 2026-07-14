@@ -66,7 +66,9 @@ Batch A sweep (M1 model, sync/rt, 1000 iters/cell, release build):
 | saturated | **62 µs** | **128 µs** | **186 µs** | **235 µs** |
 
 Saturation improves the *whole* distribution by ~10× and, critically, kills
-the multi-millisecond tail entirely — the p99.9 with no keep-warm (6.5 ms)
+the multi-millisecond tail entirely *(1k-run claim — revised by the 10k
+protocol below: the tail is thinned, not killed, and its extreme events are
+run-to-run ambient)* — the p99.9 with no keep-warm (6.5 ms)
 would have violated the kill criterion on its own if it appeared at p99.
 Trickle periods only partially recover clocks. In real pipelined operation the
 GPU is continuously busy verifying, so production gets saturation for free —
@@ -115,7 +117,8 @@ must account for this ramp.
 | 10 ms | 303 µs | 140 µs | 176 µs |
 | saturated | **225 µs** | 132 µs | 184 µs |
 
-- At a 20 Hz measured cadence, **any heartbeat ≥500 ms already suppresses the
+- *(1k-run finding — revised by the 10k protocol below: the cold event did
+  not reproduce; the heartbeat axis is flat.)* At a 20 Hz measured cadence, **any heartbeat ≥500 ms already suppresses the
   cold tail completely** (max 1.5 ms → ~175 µs); the sweep is flat below that.
   The ANE's power-gating timescale at this cadence is therefore coarser than
   500 ms — exposing deeper cold states needs a slower measured cadence (future
@@ -146,6 +149,8 @@ their absolute dispatch numbers supersede as above.
 
 - **E1 verdict:** both paths real; Option B is marginally better at the tail
   (p99 119 vs 145 µs) and simpler. Recommend B as default, A as fallback.
+  *(1k-run verdict — revised by the 10k protocol below: A and B are
+  statistically indistinguishable; choose by ergonomics.)*
 - **E6 verdict:** zero stale reads in ~4,800 measured iterations across every
   cell — IOSurface + shared-event boundary is coherent on M3 as exercised.
 - **E7 verdict:** 6 GiB of continuously-touched pressure moved nothing
@@ -449,6 +454,14 @@ remove the deep tail** — every trickle period still shows multi-ms p99.9;
 reach ~9 ms) — events at that rarity are more consistent with OS
 preemption/interrupt noise than GPU power state; per-event attribution via
 Instruments is future work.
+
+**Repeatability datum (final verification pass):** the saturated
+configuration was run twice at 10k, ~4 h apart. Run A (during an active
+session): p50 72 µs / p99 165 µs / p99.9 657 µs / max 8.95 ms. Run B
+(quiet machine, night): p50 62 µs / p99 115 µs / p99.9 170 µs / max
+327 µs. The body of the distribution reproduces within ~15%; the extreme
+tail is **run-to-run ambient** (background activity), not intrinsic —
+supporting the OS-noise interpretation of (b). Report both runs.
 
 **E5 ANE warmth (M1, sync/rt, gpu-warm saturated):**
 

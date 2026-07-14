@@ -31,9 +31,18 @@ plt.rcParams.update({
 })
 
 
-def newest(pattern: str) -> Path | None:
-    dirs = sorted(RESULTS.glob(f"*{pattern}*"))
-    return dirs[-1] if dirs else None
+def newest(pattern: str, min_iterations: int = 1000) -> Path | None:
+    """Newest run matching the cell pattern that meets the protocol's
+    iteration floor (guards against smoke-test runs shadowing real ones)."""
+    import json
+    for d in sorted(RESULTS.glob(f"*{pattern}*"), reverse=True):
+        try:
+            meta = json.load(open(d / "meta.json"))
+            if meta.get("measuredIterations", 0) >= min_iterations:
+                return d
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def load_column(run: Path, column: str, thermal_only: bool = True) -> np.ndarray:
