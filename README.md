@@ -16,7 +16,7 @@ A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (ML
 
 - **The ANE draft is fully hidden inside the GPU's verify window**: overlap-span p50 = 150.465 ms vs verify p50 = 150.463 ms — a 2 µs difference, holding across the whole k-sweep (up to 9 ANE calls per batch). Drafting costs the GPU nothing.
 - **Output is token-exact** with the baseline in every greedy cell; the sampling mode (Leviathan rejection acceptance) is distribution-exact by construction.
-- **The ANE→GPU handoff is p99 165 µs** (10,000-iteration protocol) once two undocumented power-state effects are controlled — three orders of magnitude below the compute terms.
+- **The ANE→GPU handoff is p99 165 µs** (10,000-iteration protocol) once two power-state effects, neither in Apple's documentation, are controlled — three orders of magnitude below the compute terms.
 - The measured viability arithmetic, all constants from this hardware:
   `T_draft(k=4) = 95.6 ms + T_handoff(p99) = 0.15 ms < T_verify = 144.4 ms` (34% margin).
 
@@ -32,10 +32,10 @@ A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (ML
 
 The project ran measurement-first: a synchronization harness with an explicit kill criterion (p99 handoff > 2 ms ⇒ stop) ran before any model existed. Everything is reported as p50/p95/p99/p99.9 over ≥10,000 iterations per cell — **means are never a success criterion**. Highlights:
 
-- **The dominant tail effect is an undocumented GPU idle-ramp** — not ANE cold-start. Uncontrolled: p99 1.33 ms, p99.9 6.29 ms, max 22.9 ms on the event-signal→kernel-start segment. A saturated GPU collapses it to p99 165 µs; trickle keep-warm does *not* remove the deep tail; the surviving ~1-in-10k events are run-to-run ambient (OS preemption, not power state — established by a repeat run).
+- **The dominant tail effect is the GPU idle-clock ramp** — not ANE cold-start. The effect is known to latency-sensitive Metal developers ([Anukari's *waste makes haste*](https://anukari.com/blog/devlog/waste-makes-haste), [Apple forums](https://developer.apple.com/forums/thread/702651)) but absent from Apple's documentation, and as far as I can find this is its first measurement as a tail distribution. Uncontrolled: p99 1.33 ms, p99.9 6.29 ms, max 22.9 ms on the event-signal→kernel-start segment. A saturated GPU collapses it to p99 165 µs; trickle keep-warm does *not* remove the deep tail; the surviving ~1-in-10k events are run-to-run ambient (OS preemption, not power state — established by a repeat run).
 - **The ANE warmth axis is flat** at a 20 Hz dispatch duty cycle: the workload's own traffic is heartbeat enough. (A 1k-iteration run had shown a "cold event" that vanished at 10k — one of two conclusions the full protocol reversed.)
 - **Both zero-copy ANE→GPU transport paths are real** (IOSurface→`MTLTexture`, and page-aligned `makeBuffer(bytesNoCopy:)`), verified by per-iteration backing-identity asserts; statistically indistinguishable at 10k. A coherency canary — computed by the ANE's own matmul, validated by the GPU kernel before reading the payload — has **zero stale reads in 26,000+ iterations**.
-- **Public-API dispatch overhead**: a minimal ANE dispatch round trip costs ~300 µs p50 through release-build Core ML vs the ~95 µs private-path figure from maderix's benchmarking (this bounds the overhead; it doesn't isolate it). Core ML's cost model **refuses per-token-scale ANE dispatches** (multi-token drafting is required, not just faster), and the ANE compiler rejects **compiled weights above ~1 GB** (2.3 GB fp16 → wholesale CPU; 591 MB 4-bit palettized → `preferred=ane`).
+- **Public-API dispatch overhead**: a minimal ANE dispatch round trip costs ~300 µs p50 through release-build Core ML vs the ~95 µs private-path figure from maderix's benchmarking (this bounds the overhead; it doesn't isolate it). Core ML's cost model **refuses per-token-scale ANE dispatches** (multi-token drafting is required, not just faster), and the ANE compiler rejects **compiled weights above ~1 GB** (2.3 GB fp16 → wholesale CPU; 591 MB 4-bit palettized → `preferred=ane` — a cliff independently reported by [Benazir & Lin](https://arxiv.org/abs/2604.18788) and the reason [ANEMLL](https://github.com/Anemll/Anemll) chunks models at ~950 MB).
 - ![handoff CCDF per GPU keep-warm level](Figures/handoff_gpuwarm_ccdf.png)
 
 ## The ANE deployment recipe
@@ -50,6 +50,8 @@ Getting a real stateful-KV-cache Llama-3.2-1B onto the ANE through public API hi
 | 4 | acceptance collapsed to 11% | `torch.jit.trace` **bakes slice bounds to constants** — every KV write hit cache slot 0; fix = **one-hot blend write** `cache·(1−w)+onehot(pos)ᵀ·kv` |
 
 Wall 4 was invisible to output correctness (the target corrects every wrong draft — only the acceptance rate betrayed it); a torch-vs-Core ML greedy A/B is now a mandatory draft-health assertion. A side effect of the fix: speculation rollback is **O(1)** — move the position pointer, re-mask, no cache surgery.
+
+Prior art: the static-shape rule and the fixed-window approach were published by [Panaro (Oct 2024)](https://stephenpanaro.com/blog/kv-cache-for-neural-engine), and stateful pure-ANE inference was already shipping in [ANEMLL](https://github.com/Anemll/Anemll). What I could not find documented anywhere: wall 1's all-or-nothing granularity (one dynamic slice bound rejects the *entire* program — the [coremltools FAQ](https://apple.github.io/coremltools/docs-guides/source/faqs.html) implies per-layer fallback), and wall 4's silent failure signature plus the one-hot fix — [Apple's own stateful-models guide](https://apple.github.io/coremltools/docs-guides/source/stateful-models.html) publishes the vulnerable cache-write pattern unwarned.
 
 ## Landscape (July 2026)
 
@@ -132,5 +134,8 @@ One chip (findings are expected to vary by ANE generation — raw data ships for
 - [ANEForge](https://github.com/sbryngelson/ANEForge) · [ane.cpp](https://github.com/skyfallsin/ane.cpp) · [ANEMLL](https://github.com/Anemll/Anemll) · [CoreML-LLM](https://github.com/john-rocky/CoreML-LLM) · [MLX](https://github.com/ml-explore/mlx) / [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm)
 - SqueezeBits. *Disaggregated Inference on Apple Silicon: NPU Prefill and GPU Decode.* [blog](https://blog.squeezebits.com/disaggregated-inference-on-apple-silicon-npu-prefill-and-gpu-decode-67176)
 - vllm-mlx [arXiv:2601.19139](https://arxiv.org/abs/2601.19139) · Apple-Silicon runtime comparison [arXiv:2511.05502](https://arxiv.org/abs/2511.05502)
+- Bryngelson. *Apple Neural Engine: Architecture, Programming, and Performance.* [arXiv:2606.22283](https://arxiv.org/abs/2606.22283) · Benazir, Lin. [arXiv:2604.18788](https://arxiv.org/abs/2604.18788)
+- maderix. *Inside the M4 Apple Neural Engine.* [Part 1](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine) · [Part 2](https://maderix.substack.com/p/inside-the-m4-apple-neural-engine-615)
+- Anukari devlog. [*Waste makes haste…?*](https://anukari.com/blog/devlog/waste-makes-haste) · Panaro. [*Fast KV-Cached Attention for the ANE*](https://stephenpanaro.com/blog/kv-cache-for-neural-engine)
 
-*Landscape statements are as of July 2026.*
+*Landscape statements are as of July 2026 (prior-art notes updated August 2026).*
