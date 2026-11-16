@@ -375,17 +375,24 @@ public enum PressureHelper {
     }
 
     public static func runLoop(megabytes: Int) -> Never {
-        let chunkMB = 256
+        let chunkBytes = 256 * 1_048_576
+        let pageSize = Int(getpagesize())
         var chunks: [UnsafeMutableRawPointer] = []
-        for _ in 0..<(megabytes / chunkMB) {
-            guard let c = malloc(chunkMB * 1_048_576) else { break }
-            memset(c, 0xA5, chunkMB * 1_048_576)
+        for _ in 0..<(megabytes * 1_048_576 / chunkBytes) {
+            guard let c = malloc(chunkBytes) else { break }
+            // Random fill: a constant pattern is absorbed by the memory
+            // compressor and exerts almost no resident pressure.
+            arc4random_buf(c, chunkBytes)
             chunks.append(c)
         }
-        // Keep the pages hot so the pager can't quietly reclaim them.
+        // Touch every page each pass so the pager can't quietly reclaim them.
         var pass: UInt8 = 0
         while true {
-            for c in chunks { memset(c, Int32(pass), 4096) ; memset(c + chunkMB * 524_288, Int32(pass), 4096) }
+            for c in chunks {
+                for offset in stride(from: 0, to: chunkBytes, by: pageSize) {
+                    c.storeBytes(of: pass, toByteOffset: offset, as: UInt8.self)
+                }
+            }
             pass &+= 1
             usleep(50_000)
         }

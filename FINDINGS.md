@@ -157,7 +157,12 @@ their absolute dispatch numbers supersede as above.
   (handoff p99 ±3 µs); mlock changed nothing on top (spec §9 item 5
   expectation met). *Caveat:* the balloon may not have driven this machine
   into real page-pressure; a swept-balloon cell (up to memory limit) is future
-  work before calling E7 closed.
+  work before calling E7 closed. *(Caveat confirmed, Nov 2026: the helper
+  filled its chunks with a constant byte and re-touched only two pages per
+  256 MB chunk, so the memory compressor absorbed nearly all of it — a
+  2 GiB helper measured ~7 MB resident. These cells exerted no real
+  pressure; E7 remains open. The helper now uses an incompressible fill and
+  touches every page; re-run before drawing any E7 conclusion.)*
 - **E8:** 8 sequential 1-token calls cost 50.8 ms/cycle vs 1.42 ms for one
   8-token call. Per-call cost of the (deliberately 400 MB-heavy) k1 model is
   ~6.4 ms — consistent with ANE weight-streaming being the per-dispatch cost
