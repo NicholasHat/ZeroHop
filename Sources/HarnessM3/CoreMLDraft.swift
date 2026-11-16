@@ -26,6 +26,10 @@ public final class CoreMLDraft: DraftTokenSource {
     private let vocab: Int
     private let context: Int
 
+    /// Which export interface this model has: "argmax" (fused head, "token"
+    /// output) or "logits". Recorded in run metadata.
+    public var head: String { tokenMode ? "argmax" : "logits" }
+
     private var pos = 0
     private var pendingIngest: [Int]
     private static let masked: Float16 = -30_000

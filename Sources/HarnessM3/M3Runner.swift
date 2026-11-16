@@ -76,15 +76,20 @@ public enum M3Runner {
         let verifier = TargetVerifier(model: targetCtx.model, prompt: promptTokens)
         let draft: DraftTokenSource
         let draftLane: String
+        var coremlDraft: CoreMLDraft?
         if let coremlPath = config.coremlDraftPath {
             print("draft lane: CoreML/ANE (\(coremlPath))")
-            draft = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
-                                    prompt: promptTokens)
+            let ane = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
+                                      prompt: promptTokens)
+            coremlDraft = ane
+            draft = ane
             draftLane = "coreml-ane"
         } else {
             draft = MLXDraft(model: draftCtx.model, prompt: promptTokens)
             draftLane = "mlx-gpu"
         }
+        let thermal = ThermalWatcher()
+        thermal.start()
 
         let n = config.tokens
         let draftTimes = SampleRecorder(
@@ -162,12 +167,12 @@ public enum M3Runner {
 
         let sink = try ResultSink(resultsRoot: resultsRoot, milestone: "m3",
                                   cellName: "\(draftLane)_k\(config.k)\(config.overlap ? "_overlap" : "")")
+        var cell = cellInfo(config, lane: draftLane, coreml: coremlDraft)
+        cell["overlap"] = config.overlap ? "on" : "off"
         var meta = ResultSink.Meta(
-            milestone: "m3",
-            cell: ["target": config.targetID, "draft": config.draftID,
-                   "k": String(config.k), "draft_lane": draftLane,
-                   "overlap": config.overlap ? "on" : "off"],
+            milestone: "m3", cell: cell,
             env: env, warmupIterations: 0, measuredIterations: verifyRounds)
+        meta.thermalTimeline = thermal.stop()
         meta.notes.append("speculative \(String(format: "%.2f", specTokS)) tok/s vs baseline \(String(format: "%.2f", baseTokS)) tok/s (\(String(format: "%.2fx", specTokS / baseTokS)))")
         meta.notes.append("acceptance rate \(String(format: "%.3f", acceptRate)), tokens/round \(String(format: "%.2f", Double(produced.count) / Double(verifyRounds)))")
         meta.notes.append("greedy equivalence: \(sameOutput ? "PASS" : "FAIL")")
@@ -191,15 +196,20 @@ public enum M3Runner {
         }
         let draft: SamplingDraftSource
         let draftLane: String
+        var coremlDraft: CoreMLDraft?
         if let coremlPath = config.coremlDraftPath {
             print("draft lane: CoreML/ANE (\(coremlPath)), temperature \(config.temperature)")
-            draft = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
-                                    prompt: promptTokens)
+            let ane = try CoreMLDraft(compiledModelURL: URL(fileURLWithPath: coremlPath),
+                                      prompt: promptTokens)
+            coremlDraft = ane
+            draft = ane
             draftLane = "coreml-ane"
         } else {
             draft = MLXDraft(model: draftCtx.model, prompt: promptTokens)
             draftLane = "mlx-gpu"
         }
+        let thermal = ThermalWatcher()
+        thermal.start()
         let verifier = StochasticVerifier(model: targetCtx.model, prompt: promptTokens,
                                           temperature: config.temperature)
         var rng = SplitMix64(seed: 0xC0FFEE)
@@ -250,18 +260,34 @@ public enum M3Runner {
 
         let sink = try ResultSink(resultsRoot: resultsRoot, milestone: "m3",
                                   cellName: "\(draftLane)_k\(config.k)_T\(config.temperature)")
+        var cell = cellInfo(config, lane: draftLane, coreml: coremlDraft)
+        cell["temperature"] = String(config.temperature)
         var meta = ResultSink.Meta(
-            milestone: "m3",
-            cell: ["target": config.targetID, "draft": config.draftID,
-                   "k": String(config.k), "draft_lane": draftLane,
-                   "temperature": String(config.temperature)],
+            milestone: "m3", cell: cell,
             env: env, warmupIterations: 0, measuredIterations: rounds)
+        meta.thermalTimeline = thermal.stop()
         meta.notes.append("stochastic \(String(format: "%.2f", specTokS)) vs baseline \(String(format: "%.2f", baseTokS)) tok/s (\(String(format: "%.2fx", specTokS / baseTokS)))")
         meta.notes.append("acceptance \(String(format: "%.3f", acceptRate)) at T=\(config.temperature); target distribution exact by construction (Leviathan rejection acceptance)")
         try sink.writeMeta(meta)
         try sink.writeSamplesCSV(iterationsOf: [draftTimes, verifyTimes])
         try sink.writeSummaries([draftTimes.summarize(), verifyTimes.summarize()])
         print("-> \(sink.dir.path)")
+    }
+
+    /// meta.json cell keys common to both modes. On the ANE lane the MLX
+    /// `draft` is loaded only for the tokenizer check; the model that actually
+    /// drafted is the CoreML file, so record its path and output head — the
+    /// 4/6-bit and argmax/logits exports are otherwise indistinguishable
+    /// after the fact.
+    static func cellInfo(_ config: M3Config, lane: String,
+                         coreml: CoreMLDraft?) -> [String: String] {
+        var cell = ["target": config.targetID, "draft": config.draftID,
+                    "k": String(config.k), "draft_lane": lane]
+        if let coreml, let path = config.coremlDraftPath {
+            cell["coreml_draft"] = URL(fileURLWithPath: path).standardizedFileURL.path
+            cell["coreml_draft_head"] = coreml.head
+        }
+        return cell
     }
 
     static func report(progress: Progress, label: String) {
