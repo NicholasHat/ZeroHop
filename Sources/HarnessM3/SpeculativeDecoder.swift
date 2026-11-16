@@ -2,23 +2,11 @@ import Foundation
 import HarnessCore
 import MLX
 import MLXLMCommon
+import SpeculationCore
 
-/// Greedy (temperature-0) speculative decoding per Leviathan et al., with the
-/// draft behind a protocol so M3.2 can swap the MLX draft for the CoreML/ANE
-/// draft without touching the algorithm.
-///
-/// Cache discipline (the rollback the spec's §2 margin pays for):
-///   - draft cache after propose(k):   context + d_1..d_{k-1}
-///   - target cache after verify(k):   context + d_1..d_k (all fed in one batch)
-///   - on acceptance of j<k drafts the target trims k-j entries, then feeds
-///     the correction token; the draft trims (k-1)-j and ingests the
-///     correction on its next propose. Both costs are measured, not modeled.
-public protocol DraftTokenSource {
-    /// Ingest newly-accepted tokens, then greedily propose k continuations.
-    func propose(k: Int, ingest: [Int]) throws -> [Int]
-    /// Drop the last n tokens of internal state (rejected draft suffix).
-    func rollback(_ n: Int) throws
-}
+// The MLX lanes of greedy speculative decoding. The algorithm itself (the
+// acceptance rule, cache discipline and decode loops) is backend-agnostic
+// and lives in SpeculationCore.
 
 /// MLX-backed draft (M3.1: validates the algorithm with both lanes on the
 /// GPU; the heterogeneous ANE draft is M3.2).
@@ -91,16 +79,10 @@ extension MLXDraft: SamplingDraftSource {
 
 /// Target lane: batch-verifies k draft tokens in one forward pass and
 /// maintains the "next token" logits between rounds.
-public final class TargetVerifier {
+public final class TargetVerifier: GreedyVerifier {
     private let model: any LanguageModel
     private var cache: [KVCache]
     private var nextToken: Int
-
-    public struct VerifyOutcome {
-        public let accepted: [Int]   // j drafts + 1 correction/bonus token
-        public let acceptedDrafts: Int
-        public let allAccepted: Bool
-    }
 
     public init(model: any LanguageModel, prompt: [Int]) {
         self.model = model
@@ -120,31 +102,19 @@ public final class TargetVerifier {
         // predicting positions n+1..n+k.
         let logits = model(MLXArray(drafts).expandedDimensions(axis: 0), cache: cache)
         let rows = argmaxRows(logits) // rows[i] = target's choice after d_1..d_{i+1}
+        let outcome = GreedyAcceptance.resolve(drafts: drafts, anchor: nextToken, rows: rows)
 
-        var j = 0
-        while j < k {
-            let expected = j == 0 ? nextToken : rows[j - 1]
-            if drafts[j] == expected { j += 1 } else { break }
+        // Roll back the rejected suffix d_{j+1}..d_k (if any), then feed the
+        // emitted correction/bonus token (already computed) so the cache
+        // matches the emitted sequence.
+        let rejected = k - outcome.acceptedDrafts
+        if rejected > 0 {
+            for c in cache { _ = c.trim(rejected) }
         }
-
-        let correction = j == 0 ? nextToken : rows[j - 1]
-        if j < k {
-            // Roll back the rejected suffix d_{j+1}..d_k, then feed the
-            // correction so the cache matches the emitted sequence.
-            for c in cache { _ = c.trim(k - j) }
-            let logits2 = model(MLXArray([correction]).expandedDimensions(axis: 0), cache: cache)
-            nextToken = argmaxLast(logits2)
-            return VerifyOutcome(accepted: Array(drafts[0..<j]) + [correction],
-                                 acceptedDrafts: j, allAccepted: false)
-        } else {
-            // All k accepted; the bonus token is the target's choice after
-            // d_k, already computed. Feed it to keep the cache aligned.
-            let bonus = rows[k - 1]
-            let logits2 = model(MLXArray([bonus]).expandedDimensions(axis: 0), cache: cache)
-            nextToken = argmaxLast(logits2)
-            return VerifyOutcome(accepted: drafts + [bonus],
-                                 acceptedDrafts: k, allAccepted: true)
-        }
+        let emitted = outcome.accepted.last!
+        let logits2 = model(MLXArray([emitted]).expandedDimensions(axis: 0), cache: cache)
+        nextToken = argmaxLast(logits2)
+        return outcome
     }
 
     /// GPU-only greedy baseline from the same primed state.

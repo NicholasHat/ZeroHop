@@ -2,15 +2,17 @@ import CoreML
 import Foundation
 import HarnessCore
 import HarnessM1
+import SpeculationCore
 
 /// The heterogeneous draft lane (M3.2): Llama-3.2-1B on the ANE via a
 /// stateful CoreML model with fixed-window attention.
 ///
 /// The model takes (inputIds [1,1] i32, causalMask [1,1,1,CTX] fp16,
-/// firstPosition [1] i32) and returns logits [1,1,V] fp16; the KV cache lives
-/// in MLState. Because attention always spans the full window and the mask
-/// excludes unwritten slots, rollback is O(1): move the position back and
-/// re-mask — stale cache entries are invisible and get overwritten.
+/// firstPosition [1] i32) and returns either the greedy token [1,1] i32 or
+/// logits [1,1,V] fp16 (see `head`); the KV cache lives in MLState. Because
+/// attention always spans the full window and the mask excludes unwritten
+/// slots, rollback is O(1): move the position back and re-mask — stale cache
+/// entries are invisible and get overwritten (FixedWindowCursor).
 public final class CoreMLDraft: DraftTokenSource {
     private let model: MLModel
     private let state: MLState
@@ -24,13 +26,12 @@ public final class CoreMLDraft: DraftTokenSource {
     private let maskPtr: UnsafeMutablePointer<Float16>
     private let logitsPtr: UnsafePointer<Float16>?
     private let vocab: Int
-    private let context: Int
 
     /// Which export interface this model has: "argmax" (fused head, "token"
     /// output) or "logits". Recorded in run metadata.
     public var head: String { tokenMode ? "argmax" : "logits" }
 
-    private var pos = 0
+    private var window: FixedWindowCursor
     private var pendingIngest: [Int]
     private static let masked: Float16 = -30_000
 
@@ -42,7 +43,8 @@ public final class CoreMLDraft: DraftTokenSource {
               let maskShape = maskDesc.multiArrayConstraint?.shape.map(\.intValue) else {
             throw HarnessError("draft model missing causalMask description")
         }
-        context = maskShape.last!
+        let context = maskShape.last!
+        window = FixedWindowCursor(context: context)
         // Two model interfaces: newer exports fuse the greedy reduction and
         // return "token" [1,1] i32 (4 bytes/call); older ones return "logits"
         // [1,1,V] fp16 and we argmax on the CPU.
@@ -86,7 +88,9 @@ public final class CoreMLDraft: DraftTokenSource {
             "firstPosition": MLFeatureValue(multiArray: first),
         ])
 
-        precondition(prompt.count < context, "prompt exceeds draft context window")
+        guard prompt.count < context else {
+            throw HarnessError("prompt (\(prompt.count) tokens) exceeds the draft context window (\(context))")
+        }
         pendingIngest = []
         // Prefill one token at a time (static [1,1] model); one-time cost.
         for token in prompt.dropLast() { try feed(token) }
@@ -97,18 +101,11 @@ public final class CoreMLDraft: DraftTokenSource {
     /// next token (from the fused head, or CPU argmax over the logits).
     @discardableResult
     private func feed(_ token: Int) throws -> Int {
-        // Past the fixed window the mask write would land outside its buffer
-        // and the one-hot cache write would match no slot — fail loudly
-        // instead of silently degrading the draft.
-        guard pos < context else {
-            throw HarnessError("draft context window exhausted (\(context) positions): "
-                + "prompt + generated tokens + speculation must fit; use a smaller --n")
-        }
+        let slot = try window.advance() // throws once the fixed window is full
         idsPtr[0] = Int32(token)
-        posPtr[0] = Int32(pos)
-        maskPtr[pos] = 0
+        posPtr[0] = Int32(slot)
+        maskPtr[slot] = 0
         let out = try model.prediction(from: features, using: state, options: options)
-        pos += 1
         if tokenMode {
             guard let arr = out.featureValue(for: "token")?.multiArrayValue else {
                 throw HarnessError("draft output missing 'token'")
@@ -149,10 +146,7 @@ public final class CoreMLDraft: DraftTokenSource {
     }
 
     public func rollback(_ n: Int) throws {
-        for _ in 0..<n {
-            pos -= 1
-            maskPtr[pos] = Self.masked
-        }
+        for slot in try window.rewind(n) { maskPtr[slot] = Self.masked }
         pendingIngest = []
     }
 }

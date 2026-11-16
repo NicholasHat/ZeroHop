@@ -22,10 +22,14 @@ let package = Package(
             name: "zerohop",
             dependencies: ["HarnessCore", "HarnessM0", "HarnessM1", "HarnessM2"]
         ),
+        // The backend-agnostic speculation algorithm (acceptance rule, cache
+        // bookkeeping, serial/pipelined loops): no MLX, no Core ML, so it is
+        // testable without models or an accelerator.
+        .target(name: "SpeculationCore", dependencies: ["HarnessCore"]),
         .target(
             name: "HarnessM3",
             dependencies: [
-                "HarnessCore", "HarnessM1",
+                "HarnessCore", "HarnessM1", "SpeculationCore",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ]

@@ -22,14 +22,6 @@ import HarnessCore
 ///   MISS (j accepted + correction c): rollback(2k − j), propose(k, [c]).
 public enum PipelinedDecoder {
 
-    public struct Stats {
-        public var produced: [Int] = []
-        public var rounds = 0
-        public var pipelineHits = 0
-        public var acceptedDrafts = 0
-        public var draftK = 0
-    }
-
     // Draft-lane thread protocol: all DraftTokenSource calls happen on one
     // dedicated RT pthread (E3/E4 winners: sync prediction, time-constraint
     // policy); the decode loop hands over commands through a mach-semaphore
@@ -95,14 +87,14 @@ public enum PipelinedDecoder {
         }
     }
 
-    public static func decode(draft: DraftTokenSource, verifier: TargetVerifier,
+    public static func decode(draft: DraftTokenSource, verifier: GreedyVerifier,
                               k: Int, tokens: Int,
                               draftTimes: SampleRecorder, verifyTimes: SampleRecorder,
-                              roundTimes: SampleRecorder) throws -> Stats {
+                              roundTimes: SampleRecorder) throws -> DecodeStats {
         let lane = DraftLane(draft: draft)
         defer { lane.stop() }
 
-        var stats = Stats()
+        var stats = DecodeStats()
         // Round 1 is unavoidably serial: nothing to overlap with yet.
         var drafts = try lane.run(.propose(k: k, ingest: []))
 
@@ -119,7 +111,6 @@ public enum PipelinedDecoder {
 
             stats.produced.append(contentsOf: outcome.accepted)
             stats.acceptedDrafts += outcome.acceptedDrafts
-            stats.draftK += k
             stats.rounds += 1
 
             if outcome.allAccepted, spec.first == outcome.accepted.last {

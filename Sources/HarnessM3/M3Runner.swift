@@ -4,6 +4,7 @@ import HarnessM1
 import MLX
 import MLXLLM
 import MLXLMCommon
+import SpeculationCore
 
 public struct M3Config {
     public var targetID: String
@@ -97,50 +98,28 @@ public enum M3Runner {
         let verifyTimes = SampleRecorder(name: "target_verify", capacity: n)
         let roundTimes = SampleRecorder(name: "round", capacity: n)
 
-        var produced: [Int] = []
-        var acceptedDraftTotal = 0
-        var verifyRounds = 0
-        var pipelineHits = 0
+        if config.overlap, config.coremlDraftPath == nil {
+            throw HarnessError("--overlap on requires --coreml-draft: overlapping an MLX "
+                + "draft with an MLX verify runs concurrent evals on one device "
+                + "(unsupported), and same-device overlap has nothing to gain anyway")
+        }
         let specStart = MachClock.now()
-
+        let stats: DecodeStats
         if config.overlap {
             // M3.3: draft batch N+1 on its own RT thread while the GPU
-            // verifies batch N (PipelinedDecoder).
-            guard config.coremlDraftPath != nil else {
-                throw HarnessError("--overlap on requires --coreml-draft: overlapping an MLX "
-                    + "draft with an MLX verify runs concurrent evals on one device "
-                    + "(unsupported), and same-device overlap has nothing to gain anyway")
-            }
-            let stats = try PipelinedDecoder.decode(
+            // verifies batch N.
+            stats = try PipelinedDecoder.decode(
                 draft: draft, verifier: verifier, k: config.k, tokens: n,
                 draftTimes: draftTimes, verifyTimes: verifyTimes, roundTimes: roundTimes)
-            produced = stats.produced
-            acceptedDraftTotal = stats.acceptedDrafts
-            verifyRounds = stats.rounds
-            pipelineHits = stats.pipelineHits
         } else {
-            var ingest: [Int] = []
-            while produced.count < n {
-                let t0 = MachClock.now()
-                let drafts = try draft.propose(k: config.k, ingest: ingest)
-                let t1 = MachClock.now()
-                let outcome = verifier.verify(drafts: drafts)
-                let t2 = MachClock.now()
-                draftTimes.record(MachClock.toNanos(t1 - t0))
-                verifyTimes.record(MachClock.toNanos(t2 - t1))
-                roundTimes.record(MachClock.toNanos(t2 - t0))
-
-                // Reconcile the draft with what was actually accepted.
-                if !outcome.allAccepted {
-                    // Draft cache holds d_1..d_{k-1}; keep the j accepted ones.
-                    try draft.rollback((config.k - 1) - outcome.acceptedDrafts)
-                }
-                ingest = [outcome.accepted.last!] // correction or bonus token
-                produced.append(contentsOf: outcome.accepted)
-                acceptedDraftTotal += outcome.acceptedDrafts
-                verifyRounds += 1
-            }
+            stats = try SerialDecoder.decode(
+                draft: draft, verifier: verifier, k: config.k, tokens: n,
+                draftTimes: draftTimes, verifyTimes: verifyTimes, roundTimes: roundTimes)
         }
+        let produced = stats.produced
+        let acceptedDraftTotal = stats.acceptedDrafts
+        let verifyRounds = stats.rounds
+        let pipelineHits = stats.pipelineHits
         let specNS = MachClock.toNanos(MachClock.now() - specStart)
         let specTokS = Double(produced.count) * 1e9 / Double(specNS)
         let acceptRate = Double(acceptedDraftTotal) / Double(verifyRounds * config.k)
