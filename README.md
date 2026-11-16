@@ -96,10 +96,10 @@ The measurement binary (`zerohop`) has zero third-party dependencies; MLX is con
 Requirements: Apple Silicon Mac (macOS 15+; developed on M3/26.5.1), Xcode command-line tools, Python 3.12 for model conversion only.
 
 ```sh
-swift build -c release                          # measurement harness (no deps)
+swift build -c release --product zerohop        # measurement harness (no deps)
 python3.12 -m venv Tools/.venv && Tools/.venv/bin/pip install coremltools numpy matplotlib
 Tools/.venv/bin/python Tools/make_models.py Models
-xcrun coremlcompiler compile Models/m1_tiny.mlpackage Models/
+for m in m1_tiny m2_logits_k8 m2_logits_k1; do xcrun coremlcompiler compile Models/$m.mlpackage Models/; done
 
 .build/release/zerohop m0                                                     # noise floor
 .build/release/zerohop m1 --e3 sync --e4 rt --e5 none --gpu-warm saturated    # handoff
