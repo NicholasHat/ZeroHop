@@ -112,7 +112,7 @@ for m in m1_tiny m2_logits_k8 m2_logits_k1; do xcrun coremlcompiler compile Mode
 .build/release/zerohop m2 --e1 A --gpu-warm saturated                         # transport + canary
 
 # end-to-end (downloads models; xcodebuild required — SwiftPM can't compile MLX's Metal shaders)
-Tools/.venv/bin/pip install "torch==2.7.0" "transformers==4.53.3"
+Tools/.venv/bin/pip install "torch==2.7.0" "transformers==4.53.3" scikit-learn   # sklearn: k-means palettization
 Tools/.venv/bin/python Tools/convert_draft.py Models --nbits 4   # fused argmax head (greedy only)
 #   sampling (--temp > 0) and the 85.9%-acceptance 8B matrix used: --nbits 6 --head logits
 xcrun coremlcompiler compile Models/draft_llama32_1b.mlpackage Models/
