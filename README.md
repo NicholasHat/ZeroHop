@@ -38,7 +38,10 @@ The project ran measurement-first: a synchronization harness with an explicit ki
 - **The ANE warmth axis is flat** at a 20 Hz dispatch duty cycle: the workload's own traffic is heartbeat enough. (A 1k-iteration run had shown a "cold event" that vanished at 10k — one of two conclusions the full protocol reversed.)
 - **Both zero-copy ANE→GPU transport paths are real** (IOSurface→`MTLTexture`, and page-aligned `makeBuffer(bytesNoCopy:)`), verified by per-iteration backing-identity asserts; statistically indistinguishable at 10k. A coherency canary — computed by the ANE's own matmul, validated by the GPU kernel before reading the payload — has **zero stale reads in 26,000+ iterations**.
 - **Public-API dispatch overhead**: a minimal ANE dispatch round trip costs ~300 µs p50 through release-build Core ML vs the ~95 µs private-path figure from maderix's benchmarking (this bounds the overhead; it doesn't isolate it). Core ML's cost model **refuses per-token-scale ANE dispatches** (multi-token drafting is required, not just faster), and the ANE compiler rejects **compiled weights above ~1 GB** (2.3 GB fp16 → wholesale CPU; 591 MB 4-bit palettized → `preferred=ane` — a cliff independently reported by [Benazir & Lin](https://arxiv.org/abs/2604.18788) and the reason [ANEMLL](https://github.com/Anemll/Anemll) chunks models at ~950 MB).
-- ![handoff CCDF per GPU keep-warm level](Figures/handoff_gpuwarm_ccdf.png)
+
+![handoff CCDF per GPU keep-warm level](Figures/handoff_gpuwarm_ccdf.png)
+
+*Handoff (t2′→t6) CCDF per GPU keep-warm level, 10k iterations each. The saturated curve is the quiet-machine repeat run (p99 ≈117 µs); the 165 µs quoted above is the first saturated run, taken in the same session as the other three curves. Both runs are in FINDINGS.md's repeatability datum.*
 
 ## The ANE deployment recipe
 
