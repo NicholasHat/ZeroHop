@@ -38,27 +38,24 @@ public enum M3Runner {
         print("M3.1 speculative decode — \(env.chip), macOS \(env.macOSBuild), power: \(env.powerSource)")
         print("target: \(config.targetID)\ndraft:  \(config.draftID)\nk=\(config.k), n=\(config.tokens)")
 
+        // Plain contexts, not ModelContainers: the whole run is one task that
+        // owns both models, so there is no concurrent access for a container
+        // to serialize (and nesting two `perform` closures would capture a
+        // non-Sendable context in a @Sendable closure).
         print("loading target…")
-        let targetContainer = try await LLMModelFactory.shared.loadContainer(
+        let targetCtx = try await LLMModelFactory.shared.load(
             configuration: ModelConfiguration(id: config.targetID)) { p in
                 report(progress: p, label: "target")
             }
         print("\nloading draft…")
-        let draftContainer = try await LLMModelFactory.shared.loadContainer(
+        let draftCtx = try await LLMModelFactory.shared.load(
             configuration: ModelConfiguration(id: config.draftID)) { p in
                 report(progress: p, label: "draft")
             }
         print("")
 
-        let cfg = config
-        let root = resultsRoot
-        let envCaptured = env
-        try await targetContainer.perform { targetCtx in
-            try await draftContainer.perform { draftCtx in
-                try decodeAndReport(targetCtx: targetCtx, draftCtx: draftCtx,
-                                    config: cfg, env: envCaptured, resultsRoot: root)
-            }
-        }
+        try decodeAndReport(targetCtx: targetCtx, draftCtx: draftCtx,
+                            config: config, env: env, resultsRoot: resultsRoot)
     }
 
     static func decodeAndReport(targetCtx: ModelContext, draftCtx: ModelContext,
