@@ -181,4 +181,5 @@ Generated from `Results/` by `Tools/plot_results.py`: full histograms per matrix
 7. ⏳ 6-bit draft A/B; 8B target (spec-faithful §2 arithmetic); M3.3 overlap
    gated on the config becoming draft-fast; M4 writeup from FINDINGS.md
 
-Measured detail lives in FINDINGS.md; per-run raw data in Results/.
+Measured detail lives in FINDINGS.md; per-run raw data in Results/ (kept
+locally, not published).

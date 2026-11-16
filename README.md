@@ -87,7 +87,8 @@ On a single engine: ane.cpp's *self*-speculation on the ANE is slower than plain
 | [`Sources/HarnessM0–M2`](Sources/) | the handoff harness: noise floor, shared-event round trip, zero-copy transport A/B, coherency canary, memory-pressure cells |
 | [`Sources/HarnessM3`](Sources/HarnessM3) | the end-to-end system: Core ML/ANE draft with O(1) rollback, MLX target lane, pipelined decoder, rejection sampling |
 | [`Tools/convert_draft.py`](Tools/convert_draft.py) | the ANE deployment recipe, executable |
-| [`Tools/plot_results.py`](Tools/plot_results.py) | regenerates the figures from `Results/` raw data (the k-sweep values are transcribed from the m3 runs) |
+| [`Tools/plot_results.py`](Tools/plot_results.py) | renders the figures from a local `Results/` directory (the k-sweep values are transcribed from the m3 runs) |
+| [`Figures/`](Figures) | the rendered figures used in this README |
 | [`FINDINGS.md`](FINDINGS.md) | the full lab notebook, chronological — including the superseded claims and their revisions |
 | [`PLAN.md`](PLAN.md) | the implementation plan + SDK audit (responds to a project spec not included in the repo) |
 
@@ -120,9 +121,11 @@ xcodebuild build -scheme zerohop-m3 -configuration Release -destination 'platfor
 
 Protocol: ≥500 warmup + ≥10,000 measured iterations per cell, **release builds only** (debug builds inflate the dispatch segment ~3×), thermal-gated (non-nominal iterations are excluded). Power source is recorded per run rather than controlled: the 10k GPU keep-warm sweep and the k-sweep ran on battery. Every run exports `meta.json` (chip, OS build, power source, thermal timeline) + per-iteration `samples.csv` to `Results/`.
 
+**What's published:** the code, the summary tables in [`FINDINGS.md`](FINDINGS.md), and the rendered figures in [`Figures/`](Figures). The raw run directories behind them (`Results/`) are kept locally and not published, so the figures can't be regenerated from a fresh clone — run the harness to produce your own `Results/`, then `Tools/.venv/bin/python Tools/plot_results.py`.
+
 ## Limitations
 
-One chip (findings are expected to vary by ANE generation — raw data ships for replication); greedy is the optimized regime; the ANE draft is per-call latency-bound (~14–20 ms/token; a trained [Medusa](https://arxiv.org/abs/2401.10774)-class multi-token head would cut this, and its gains convert to speculation-window headroom rather than device contention); energy unmeasured (`powermetrics` needs root); the public-vs-private tax number bounds rather than isolates.
+One chip (findings are expected to vary by ANE generation — the harness ships for replication on other chips; the raw runs from this one are not published); greedy is the optimized regime; the ANE draft is per-call latency-bound (~14–20 ms/token; a trained [Medusa](https://arxiv.org/abs/2401.10774)-class multi-token head would cut this, and its gains convert to speculation-window headroom rather than device contention); energy unmeasured (`powermetrics` needs root); the public-vs-private tax number bounds rather than isolates.
 
 ## References
 

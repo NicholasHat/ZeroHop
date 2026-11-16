@@ -2,7 +2,8 @@
 
 **Hardware/software:** Apple M3 · macOS 26.5.1 (25F80) · Xcode 26.4 / SDK 26.4.
 All numbers below are from `Results/` runs on this machine, plugged in, thermal
-state nominal unless flagged. Session runs use a reduced protocol (≥1,000
+state nominal unless flagged. (The raw run directories are kept locally and
+are not published; these tables are the published record.) Session runs use a reduced protocol (≥1,000
 measured iterations per cell at a 20 Hz dispatch pace); re-run with
 `--warmup 500 --iters 10000` for publication-grade histograms (commands in
 README).
@@ -483,7 +484,8 @@ neighbor holds at most two of the four; this work holds all four.
 
 Twelve headline cells rerun at the spec's full protocol (500 warmup +
 10,000 measured, release build, GPU-warm as noted). Values below supersede
-the 1k tables above where they differ; per-cell CSVs in Results/.
+the 1k tables above where they differ; per-cell CSVs in the local (unpublished)
+Results/.
 
 **GPU idle-ramp (M1, sync/rt, e5=none):**
 

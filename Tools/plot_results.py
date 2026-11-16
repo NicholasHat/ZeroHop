@@ -4,6 +4,12 @@ analysis only — anything goes here per spec §11).
 
 Usage: Tools/.venv/bin/python Tools/plot_results.py [results-dir] [out-dir]
 
+Needs a local Results/ directory written by the harness binaries. The raw run
+directories are kept locally and not published with the repo, so on a fresh
+clone there is nothing to plot until you run the measurements yourself; the
+script refuses to run rather than overwrite the committed figures with empty
+plots.
+
 Each figure is written as PDF (camera-ready) and PNG (drafting). Cells are
 selected by the newest run directory matching each cell-name pattern, so
 rerunning after fresh measurements picks up the new data automatically.
@@ -21,6 +27,10 @@ import numpy as np
 
 RESULTS = Path(sys.argv[1] if len(sys.argv) > 1 else "Results")
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "Figures")
+
+if not any(RESULTS.glob("*/meta.json")):
+    sys.exit(f"error: no harness runs in {RESULTS}/ (raw run data isn't published "
+             "with the repo; run the harness first, see README)")
 OUT.mkdir(exist_ok=True)
 
 plt.rcParams.update({
