@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Convert Llama-3.2-1B to a stateful (KV-cache) fp16 CoreML model for the
-ANE draft lane (M3.2).
+"""Convert Llama-3.2-1B to a stateful (KV-cache) CoreML model for the ANE
+draft lane (M3.2): fp16 activations and states, LUT-palettized weights
+(4-bit by default) to stay under the ANE's compiled-weight ceiling.
 
 Pattern: the KV cache lives in CoreML MLState buffers (registered as torch
 buffers on a wrapper module and declared via ct.StateType); each forward
-slice-updates the cache in place. Two enumerated input lengths keep shapes
-static for the ANE: 128 (prompt prefill chunk) and 1 (decode step).
+writes the new K/V with a one-hot blend over a fixed 768-slot window. Shapes
+are fully static ([1, 1] decode step; the prompt is prefilled one token at
+a time) and the model returns the greedy token id, not logits.
 
 Weights come from an ungated mirror of meta-llama/Llama-3.2-1B-Instruct so no
 HF token is required; the tokenizer/vocab matches the mlx-community 4-bit
 variants used for the M3 target.
 
-Usage: Tools/.venv/bin/python Tools/convert_draft.py [output-dir]
+Usage: Tools/.venv/bin/python Tools/convert_draft.py [output-dir] [--nbits 4|6]
 Then:  xcrun coremlcompiler compile Models/draft_llama32_1b.mlpackage Models/
 """
 
@@ -25,7 +27,6 @@ from transformers.cache_utils import Cache
 
 MODEL_ID = "unsloth/Llama-3.2-1B-Instruct"
 CONTEXT = 768
-PREFILL = 128
 
 # coremltools 9.0 bug workaround: the torchscript `int`/`float` cast handler
 # calls dtype(x.val) which rejects 1-element arrays (`[32.]`, Llama-3.2's RoPE
@@ -49,7 +50,7 @@ _ct_torch_ops._cast = _patched_cast
 
 class SliceUpdateCache(Cache):
     """Cache implementation that writes K/V into externally-owned buffers via
-    in-place slice assignment (traceable; becomes CoreML state updates)."""
+    a one-hot blend (traceable; becomes CoreML state updates)."""
 
     def __init__(self, key_cache: torch.Tensor, value_cache: torch.Tensor):
         super().__init__()
