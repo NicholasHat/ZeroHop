@@ -7,13 +7,24 @@ Pattern: the KV cache lives in CoreML MLState buffers (registered as torch
 buffers on a wrapper module and declared via ct.StateType); each forward
 writes the new K/V with a one-hot blend over a fixed 768-slot window. Shapes
 are fully static ([1, 1] decode step; the prompt is prefilled one token at
-a time) and the model returns the greedy token id, not logits.
+a time).
+
+Two output heads (CoreMLDraft detects which one it was given):
+  --head argmax (default): fused greedy head, returns "token" [1,1] i32 —
+      4 bytes/call; what the k-sweep's 4-bit cells used.
+  --head logits: returns "logits" [1,1,V] fp16 and the Swift side takes the
+      argmax on the CPU. Required for sampling (T>0 needs the full q
+      distribution); this is the export behind the 8B matrix (85.9%
+      acceptance), the 6-bit k-sweep cells and the T=0.8 ANE cell, which used
+      `--nbits 6 --head logits` (saved then as draft_llama32_1b_6bit, before
+      the _logits suffix existed).
 
 Weights come from an ungated mirror of meta-llama/Llama-3.2-1B-Instruct so no
 HF token is required; the tokenizer/vocab matches the mlx-community 4-bit
 variants used for the M3 target.
 
 Usage: Tools/.venv/bin/python Tools/convert_draft.py [output-dir] [--nbits 4|6]
+           [--head argmax|logits]
 Then:  xcrun coremlcompiler compile Models/draft_llama32_1b.mlpackage Models/
 """
 
@@ -97,8 +108,9 @@ class SliceUpdateCache(Cache):
 
 
 class StatefulDraft(torch.nn.Module):
-    def __init__(self, model_id: str, context: int):
+    def __init__(self, model_id: str, context: int, head: str = "argmax"):
         super().__init__()
+        self.head = head
         # ALL-fp16: the frontend requires a dtype-consistent traced graph and
         # the backend requires fp16 states, so fp16 model + fp16 buffers is
         # the only viable combination.
@@ -124,13 +136,24 @@ class StatefulDraft(torch.nn.Module):
             past_key_values=past,
             use_cache=True,
         )
+        if self.head == "logits":
+            # Full next-token distribution: sampling needs q, not just argmax.
+            return out.logits
         # Greedy drafting only ever consumes the argmax token id: fuse the
         # reduction into the model so each call returns 4 bytes instead of a
         # 256 KB logits tensor, and the reduction runs on-device.
         return out.logits[:, -1, :].argmax(dim=-1, keepdim=True).to(torch.int32)
 
 
-def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans") -> None:
+# Output declaration per head; the names are the interface CoreMLDraft keys on.
+HEAD_OUTPUTS = {
+    "argmax": ct.TensorType(name="token", dtype=np.int32),
+    "logits": ct.TensorType(name="logits", dtype=np.float16),
+}
+
+
+def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans",
+            head: str = "argmax") -> None:
     """Fully static shapes: [1, seq_len] tokens against the fixed CONTEXT
     window. seq_len=1 is the decode-step model (prefill feeds the prompt one
     token at a time — a one-time cost per generation). Static shapes are also
@@ -138,7 +161,7 @@ def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans")
     symbolic-shape bug (aten int cast on a 1-D value) and dynamic shapes tend
     to fall off the ANE anyway."""
     torch.set_grad_enabled(False)
-    wrapper = StatefulDraft(MODEL_ID, CONTEXT).eval()
+    wrapper = StatefulDraft(MODEL_ID, CONTEXT, head).eval()
 
     ids = torch.zeros((1, seq_len), dtype=torch.long)
     mask = torch.zeros((1, 1, seq_len, CONTEXT), dtype=torch.float16)
@@ -153,7 +176,7 @@ def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans")
             ct.TensorType(name="causalMask", shape=(1, 1, seq_len, CONTEXT), dtype=np.float16),
             ct.TensorType(name="firstPosition", shape=(1,), dtype=np.int32),
         ],
-        outputs=[ct.TensorType(name="token", dtype=np.int32)],
+        outputs=[HEAD_OUTPUTS[head]],
         states=[
             ct.StateType(wrapped_type=ct.TensorType(shape=cache_shape, dtype=np.float16),
                          name="keyCache"),
@@ -175,7 +198,9 @@ def convert(outdir: str, seq_len: int = 1, nbits: int = 4, mode: str = "kmeans")
             mode=mode, nbits=nbits, granularity="per_grouped_channel", group_size=16))
     mlmodel = cto.coreml.palettize_weights(mlmodel, config)
 
-    suffix = ("" if seq_len == 1 else f"_s{seq_len}") + (f"_{nbits}bit" if nbits != 4 else "")
+    suffix = (("" if seq_len == 1 else f"_s{seq_len}")
+              + (f"_{nbits}bit" if nbits != 4 else "")
+              + ("_logits" if head == "logits" else ""))
     path = f"{outdir}/draft_llama32_1b{suffix}.mlpackage"
     mlmodel.save(path)
     print(f"wrote {path}")
@@ -187,5 +212,6 @@ if __name__ == "__main__":
     p.add_argument("outdir", nargs="?", default="Models")
     p.add_argument("--nbits", type=int, default=4)
     p.add_argument("--mode", default="kmeans")
+    p.add_argument("--head", choices=sorted(HEAD_OUTPUTS), default="argmax")
     a = p.parse_args()
-    convert(a.outdir, nbits=a.nbits, mode=a.mode)
+    convert(a.outdir, nbits=a.nbits, mode=a.mode, head=a.head)
