@@ -38,5 +38,11 @@ let package = Package(
             name: "zerohop-m3",
             dependencies: ["HarnessCore", "HarnessM3"]
         ),
+        // Pure logic only (statistics, flag parsing, speculation bookkeeping):
+        // no models, no MLX, no timing assertions.
+        .testTarget(
+            name: "ZeroHopTests",
+            dependencies: ["HarnessCore", "SpeculationCore"]
+        ),
     ]
 )

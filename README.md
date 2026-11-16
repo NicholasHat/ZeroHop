@@ -88,7 +88,9 @@ On a single engine: ane.cpp's *self*-speculation on the ANE is slower than plain
 |---|---|
 | [`Sources/HarnessCore`](Sources/HarnessCore) | measurement primitives: exact-percentile recorders (zero-alloc loops), CPU/GPU clock fusion, real-time thread policies, thermal gating, raw CSV/JSON export |
 | [`Sources/HarnessM0–M2`](Sources/) | the handoff harness: noise floor, shared-event round trip, zero-copy transport A/B, coherency canary, memory-pressure cells |
-| [`Sources/HarnessM3`](Sources/HarnessM3) | the end-to-end system: Core ML/ANE draft with O(1) rollback, MLX target lane, pipelined decoder, rejection sampling |
+| [`Sources/SpeculationCore`](Sources/SpeculationCore) | the backend-agnostic speculation algorithm: greedy acceptance rule, serial and pipelined decode loops, fixed-window draft cursor (no MLX/Core ML) |
+| [`Sources/HarnessM3`](Sources/HarnessM3) | the end-to-end system: Core ML/ANE draft with O(1) rollback, MLX target lane, rejection sampling |
+| [`Tests/ZeroHopTests`](Tests/ZeroHopTests) | `swift test`: percentile/thermal-gate math, flag parsing, and the decode loops' cache bookkeeping against a model-free fake draft and target |
 | [`Tools/convert_draft.py`](Tools/convert_draft.py) | the ANE deployment recipe, executable |
 | [`Tools/plot_results.py`](Tools/plot_results.py) | renders the figures from a local `Results/` directory (the k-sweep values are transcribed from the m3 runs) |
 | [`Figures/`](Figures) | the rendered figures used in this README |
@@ -103,6 +105,7 @@ Requirements: Apple Silicon Mac (macOS 15+; developed on M3/26.5.1), Xcode comma
 
 ```sh
 swift build -c release --product zerohop        # measurement harness (no deps)
+swift build --product ZeroHopPackageTests && swift test --skip-build   # unit tests; skips building MLX
 python3.12 -m venv Tools/.venv && Tools/.venv/bin/pip install coremltools numpy matplotlib
 Tools/.venv/bin/python Tools/make_models.py Models
 for m in m1_tiny m2_logits_k8 m2_logits_k1; do xcrun coremlcompiler compile Models/$m.mlpackage Models/; done
