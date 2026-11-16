@@ -69,7 +69,12 @@ public func printSummaryTable(_ summaries: [SampleRecorder.Summary]) {
     let f = SampleRecorder.fmt
     print("  " + rpad("stage", 22) + ["p50", "p95", "p99", "p99.9", "max", "n"].map { lpad($0, 11) }.joined())
     for s in summaries {
-        let cells = [f(s.p50), f(s.p95), f(s.p99), f(s.p999), f(s.max), String(s.count)]
+        let cells = s.count == 0
+            ? Array(repeating: "—", count: 5) + ["0"]
+            : [f(s.p50), f(s.p95), f(s.p99), f(s.p999), f(s.max), String(s.count)]
         print("  " + rpad(s.name, 22) + cells.map { lpad($0, 11) }.joined())
+    }
+    if let discarded = summaries.map(\.discardedThermal).max(), discarded > 0 {
+        print("  (\(discarded) samples discarded: thermal state not nominal)")
     }
 }

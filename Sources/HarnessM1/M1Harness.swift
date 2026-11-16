@@ -370,8 +370,11 @@ public enum M1Harness {
         print("\nhandoff (t2'→t6) distribution:")
         print(handoff.bucketRender())
 
-        let p99 = handoff.summarize().p99
-        print(p99 > 2_000_000
+        let handoffSummary = handoff.summarize()
+        let p99 = handoffSummary.p99
+        print(handoffSummary.count == 0
+            ? "kill criterion check: NO VERDICT — every sample was discarded (thermal state not nominal); rerun when the machine is cool"
+            : p99 > 2_000_000
             ? "KILL CRITERION CHECK: p99 handoff \(SampleRecorder.fmt(p99)) EXCEEDS ~2 ms for this cell (spec §10 M1) — compare across mitigation cells before verdict"
             : "kill criterion check: p99 handoff \(SampleRecorder.fmt(p99)) is within the ~2 ms budget for this cell")
         print("-> \(sink.dir.path)")

@@ -46,7 +46,8 @@ public final class SampleRecorder {
         public let mean: Double // reported, never a criterion (spec §2)
     }
 
-    /// Exact percentiles over thermally-clean samples.
+    /// Exact percentiles over thermally-clean samples. When none are clean the
+    /// summary has count 0 and zeroed fields — callers must check `count`.
     public func summarize() -> Summary {
         var clean: [UInt64] = []
         clean.reserveCapacity(count)
@@ -54,7 +55,10 @@ public final class SampleRecorder {
         for i in 0..<count {
             if flags[i] == 1 { clean.append(samples[i]) } else { discarded += 1 }
         }
-        if clean.isEmpty { clean = [0] }
+        guard !clean.isEmpty else {
+            return Summary(name: name, count: 0, discardedThermal: discarded,
+                           p50: 0, p95: 0, p99: 0, p999: 0, min: 0, max: 0, mean: 0)
+        }
         clean.sort()
         func pct(_ p: Double) -> UInt64 {
             let idx = Int((Double(clean.count - 1) * p).rounded())
