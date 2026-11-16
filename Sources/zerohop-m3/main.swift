@@ -7,19 +7,13 @@ import HarnessM3
 //
 //   zerohop-m3 [--target <hf-id>] [--draft <hf-id>] [--k N] [--n N] [--prompt S]
 
-func parseFlags(_ args: [String]) -> [String: String] {
-    var flags: [String: String] = [:]
-    var i = 0
-    while i < args.count {
-        if args[i].hasPrefix("--"), i + 1 < args.count {
-            flags[String(args[i].dropFirst(2))] = args[i + 1]
-            i += 2
-        } else { i += 1 }
-    }
-    return flags
+let flags: [String: String]
+do {
+    flags = try Flags.parse(Array(CommandLine.arguments.dropFirst()))
+} catch {
+    FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+    exit(64)
 }
-
-let flags = parseFlags(Array(CommandLine.arguments.dropFirst()))
 var config = M3Config(
     targetID: flags["target"] ?? "mlx-community/Llama-3.2-3B-Instruct-4bit",
     draftID: flags["draft"] ?? "mlx-community/Llama-3.2-1B-Instruct-4bit",

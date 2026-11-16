@@ -13,20 +13,6 @@ import HarnessM2
 //              [--mlock on] [--pressure on] [--gpu-warm none|<ms>|saturated]
 //   zerohop placement --model PATH.mlmodelc
 
-func parseFlags(_ args: [String]) -> [String: String] {
-    var flags: [String: String] = [:]
-    var i = 0
-    while i < args.count {
-        if args[i].hasPrefix("--"), i + 1 < args.count {
-            flags[String(args[i].dropFirst(2))] = args[i + 1]
-            i += 2
-        } else {
-            i += 1
-        }
-    }
-    return flags
-}
-
 let args = Array(CommandLine.arguments.dropFirst())
 let resultsRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     .appendingPathComponent("Results")
@@ -35,7 +21,13 @@ guard let command = args.first else {
     print("usage: zerohop <m0|m1|m2|placement> [--warmup N] [--iters N] ...")
     exit(64)
 }
-let flags = parseFlags(Array(args.dropFirst()))
+let flags: [String: String]
+do {
+    flags = try Flags.parse(Array(args.dropFirst()))
+} catch {
+    FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+    exit(64)
+}
 let warmup = Int(flags["warmup"] ?? "500") ?? 500
 let iters = Int(flags["iters"] ?? "10000") ?? 10000
 
