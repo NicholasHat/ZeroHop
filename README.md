@@ -14,9 +14,11 @@ A 1B draft model runs on the ANE (Core ML), an 8B target verifies on the GPU (ML
 | + ANE draft, **pipelined** (k=4) | 26.4 | 1.28× |
 | + ANE draft, pipelined, fused head (**k=6**) | **28.1** | **1.47×** |
 
+Each speedup is against the GPU-only baseline measured in the same run (19.1–20.6 tok/s across runs); every cell is one 200-token greedy generation from the same prompt.
+
 - **The ANE draft is fully hidden inside the GPU's verify window**: overlap-span p50 = 150.465 ms vs verify p50 = 150.463 ms — a 2 µs difference, holding across the whole k-sweep (up to 9 ANE calls per batch). Drafting costs the GPU nothing.
 - **Output is token-exact** with the baseline in every greedy cell; the sampling mode (Leviathan rejection acceptance) is distribution-exact by construction.
-- **The ANE→GPU handoff is p99 165 µs** (10,000-iteration protocol) once two power-state effects, neither in Apple's documentation, are controlled — three orders of magnitude below the compute terms.
+- **The ANE→GPU handoff is p99 165 µs** (10,000-iteration protocol) once the GPU's idle-clock ramp, a power-state effect absent from Apple's documentation, is controlled — three orders of magnitude below the compute terms.
 - The measured viability arithmetic, all constants from this hardware:
   `T_draft(k=4) = 95.6 ms + T_handoff(p99) = 0.15 ms < T_verify = 144.4 ms` (34% margin).
 
@@ -49,7 +51,7 @@ Getting a real stateful-KV-cache Llama-3.2-1B onto the ANE through public API hi
 | 3 | still all-CPU at fp16 | **≤1 GB compiled-weight ceiling** → 4/6-bit LUT palettization |
 | 4 | acceptance collapsed to 11% | `torch.jit.trace` **bakes slice bounds to constants** — every KV write hit cache slot 0; fix = **one-hot blend write** `cache·(1−w)+onehot(pos)ᵀ·kv` |
 
-Wall 4 was invisible to output correctness (the target corrects every wrong draft — only the acceptance rate betrayed it); a torch-vs-Core ML greedy A/B is now a mandatory draft-health assertion. A side effect of the fix: speculation rollback is **O(1)** — move the position pointer, re-mask, no cache surgery.
+Wall 4 was invisible to output correctness (the target corrects every wrong draft — only the acceptance rate betrayed it); a torch-vs-Core ML greedy A/B is what caught it, and is the draft-health check to run after every conversion (it is not automated in `convert_draft.py`). A side effect of the fix: speculation rollback is **O(1)** — move the position pointer, re-mask, no cache surgery.
 
 Prior art: the static-shape rule and the fixed-window approach were published by [Panaro (Oct 2024)](https://stephenpanaro.com/blog/kv-cache-for-neural-engine), and stateful pure-ANE inference was already shipping in [ANEMLL](https://github.com/Anemll/Anemll). What I could not find documented anywhere: wall 1's all-or-nothing granularity (one dynamic slice bound rejects the *entire* program — the [coremltools FAQ](https://apple.github.io/coremltools/docs-guides/source/faqs.html) implies per-layer fallback), and wall 4's silent failure signature plus the one-hot fix — [Apple's own stateful-models guide](https://apple.github.io/coremltools/docs-guides/source/stateful-models.html) publishes the vulnerable cache-write pattern unwarned.
 
@@ -85,7 +87,7 @@ On a single engine: ane.cpp's *self*-speculation on the ANE is slower than plain
 | [`Sources/HarnessM0–M2`](Sources/) | the handoff harness: noise floor, shared-event round trip, zero-copy transport A/B, coherency canary, memory-pressure cells |
 | [`Sources/HarnessM3`](Sources/HarnessM3) | the end-to-end system: Core ML/ANE draft with O(1) rollback, MLX target lane, pipelined decoder, rejection sampling |
 | [`Tools/convert_draft.py`](Tools/convert_draft.py) | the ANE deployment recipe, executable |
-| [`Tools/plot_results.py`](Tools/plot_results.py) | regenerates every figure from `Results/` raw data |
+| [`Tools/plot_results.py`](Tools/plot_results.py) | regenerates the figures from `Results/` raw data (the k-sweep values are transcribed from the m3 runs) |
 | [`FINDINGS.md`](FINDINGS.md) | the full lab notebook, chronological — including the superseded claims and their revisions |
 | [`PLAN.md`](PLAN.md) | the implementation plan + SDK audit (responds to a project spec not included in the repo) |
 
@@ -116,7 +118,7 @@ xcodebuild build -scheme zerohop-m3 -configuration Release -destination 'platfor
   --coreml-draft Models/draft_llama32_1b.mlmodelc --overlap on
 ```
 
-Protocol: ≥500 warmup + ≥10,000 measured iterations per cell, **release builds only** (debug builds inflate the dispatch segment ~3×), plugged in, thermal-gated. Every run exports `meta.json` (chip, OS build, power source, thermal timeline) + per-iteration `samples.csv` to `Results/`.
+Protocol: ≥500 warmup + ≥10,000 measured iterations per cell, **release builds only** (debug builds inflate the dispatch segment ~3×), thermal-gated (non-nominal iterations are excluded). Power source is recorded per run rather than controlled: the 10k GPU keep-warm sweep and the k-sweep ran on battery. Every run exports `meta.json` (chip, OS build, power source, thermal timeline) + per-iteration `samples.csv` to `Results/`.
 
 ## Limitations
 
