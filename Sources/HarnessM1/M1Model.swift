@@ -76,11 +76,6 @@ public enum M1Model {
     }
 }
 
-public struct HarnessError: Error, CustomStringConvertible {
-    public let description: String
-    public init(_ description: String) { self.description = description }
-}
-
 /// Page-aligned Float16 output backing (the header-sanctioned Option B form)
 /// plus the E2 identity assertion. Used at M1 already so the assert machinery
 /// is exercised before M2 depends on it.
