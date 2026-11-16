@@ -93,6 +93,13 @@ public final class CoreMLDraft: DraftTokenSource {
     /// next token (from the fused head, or CPU argmax over the logits).
     @discardableResult
     private func feed(_ token: Int) throws -> Int {
+        // Past the fixed window the mask write would land outside its buffer
+        // and the one-hot cache write would match no slot — fail loudly
+        // instead of silently degrading the draft.
+        guard pos < context else {
+            throw HarnessError("draft context window exhausted (\(context) positions): "
+                + "prompt + generated tokens + speculation must fit; use a smaller --n")
+        }
         idsPtr[0] = Int32(token)
         posPtr[0] = Int32(pos)
         maskPtr[pos] = 0
