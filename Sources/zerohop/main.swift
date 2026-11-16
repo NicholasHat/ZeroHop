@@ -8,6 +8,10 @@ import HarnessM2
 //   zerohop m0 [--warmup N] [--iters N]
 //   zerohop m1 [--warmup N] [--iters N] [--model PATH] [--e3 sync|async|naive]
 //              [--e4 default|qos-ui|rt] [--e5 none|500|100|50|10|saturated]
+//              [--gpu-warm none|<ms>|saturated]
+//   zerohop m2 [--warmup N] [--iters N] [--e1 A|B] [--e8 multi|seq]
+//              [--mlock on] [--pressure on] [--gpu-warm none|<ms>|saturated]
+//   zerohop placement --model PATH.mlmodelc
 
 func parseFlags(_ args: [String]) -> [String: String] {
     var flags: [String: String] = [:]
@@ -28,7 +32,7 @@ let resultsRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     .appendingPathComponent("Results")
 
 guard let command = args.first else {
-    print("usage: zerohop <m0|m1> [--warmup N] [--iters N] ...")
+    print("usage: zerohop <m0|m1|m2|placement> [--warmup N] [--iters N] ...")
     exit(64)
 }
 let flags = parseFlags(Array(args.dropFirst()))
